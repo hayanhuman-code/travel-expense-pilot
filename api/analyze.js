@@ -59,13 +59,47 @@ export default async function handler(req, res) {
     const data = await response.json();
     const text = data.content?.[0]?.text || "";
 
-    // JSON 추출 (마크다운 코드블록 처리)
-    let jsonStr = text;
-    const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (jsonMatch) jsonStr = jsonMatch[1];
-    jsonStr = jsonStr.trim();
+    // JSON 추출 (여러 패턴 시도)
+    let parsed = null;
 
-    const parsed = JSON.parse(jsonStr);
+    // 1차: ```json ... ``` 코드블록 (닫는 ``` 있는 경우)
+    const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (codeBlockMatch) {
+      try { parsed = JSON.parse(codeBlockMatch[1].trim()); } catch (e) { /* fallthrough */ }
+    }
+
+    // 2차: ```json 뒤의 내용 (닫는 ``` 없는 경우)
+    if (!parsed) {
+      const openBlockMatch = text.match(/```(?:json)?\s*([\s\S]*)/);
+      if (openBlockMatch) {
+        const content = openBlockMatch[1].replace(/```\s*$/, "").trim();
+        try { parsed = JSON.parse(content); } catch (e) { /* fallthrough */ }
+      }
+    }
+
+    // 3차: 전체 텍스트를 JSON으로
+    if (!parsed) {
+      try { parsed = JSON.parse(text.trim()); } catch (e) { /* fallthrough */ }
+    }
+
+    // 4차: [ ] 또는 { } 블록 추출
+    if (!parsed) {
+      const bracketMatch = text.match(/\[[\s\S]*\]/);
+      if (bracketMatch) {
+        try { parsed = JSON.parse(bracketMatch[0]); } catch (e) { /* fallthrough */ }
+      }
+    }
+    if (!parsed) {
+      const braceMatch = text.match(/\{[\s\S]*\}/);
+      if (braceMatch) {
+        try { parsed = JSON.parse(braceMatch[0]); } catch (e) { /* fallthrough */ }
+      }
+    }
+
+    if (!parsed) {
+      console.error("JSON parse failed. Raw text:", text);
+      return res.status(500).json({ error: "Claude 응답을 파싱할 수 없습니다", raw: text.slice(0, 500) });
+    }
 
     // 다중 영수증 응답 정규화 → 항상 배열로 반환
     let items;
