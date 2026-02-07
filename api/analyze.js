@@ -67,10 +67,27 @@ export default async function handler(req, res) {
 
     const parsed = JSON.parse(jsonStr);
 
-    // proofMetro 계산 (주소에서 광역지자체 추출)
-    const result = enrichResult(parsed, fileName);
+    // 다중 영수증 응답 정규화 → 항상 배열로 반환
+    let items;
+    if (Array.isArray(parsed)) {
+      items = parsed;
+    } else if (parsed.type) {
+      // 단일 영수증
+      items = [parsed];
+    } else {
+      // 객체에 숫자 키로 들어온 경우 ({"0": {...}, "1": {...}})
+      const numKeys = Object.keys(parsed).filter((k) => /^\d+$/.test(k));
+      if (numKeys.length > 0) {
+        items = numKeys.sort((a, b) => Number(a) - Number(b)).map((k) => parsed[k]);
+      } else {
+        items = [parsed];
+      }
+    }
 
-    return res.status(200).json(result);
+    // 각 항목에 proofMetro 계산
+    const results = items.map((item) => enrichResult(item, fileName));
+
+    return res.status(200).json(results);
   } catch (err) {
     console.error("Analysis error:", err);
     return res.status(500).json({ error: err.message, stack: err.stack });
@@ -79,7 +96,8 @@ export default async function handler(req, res) {
 
 // ── 분석 프롬프트 ──
 const ANALYSIS_PROMPT = `당신은 한국 공공기관의 출장 영수증 분석 전문가입니다.
-업로드된 이미지를 분석하여 아래 형식 중 하나로 JSON을 반환하세요.
+업로드된 문서/이미지를 분석하여 아래 형식으로 JSON 배열을 반환하세요.
+영수증이 1개라도 반드시 배열([...])로 감싸세요. 여러 영수증이면 배열에 모두 포함하세요.
 반드시 JSON만 출력하세요. 설명이나 마크다운 없이 순수 JSON만 출력하세요.
 
 ■ 철도 영수증 (KTX, SRT, ITX, 무궁화 등)

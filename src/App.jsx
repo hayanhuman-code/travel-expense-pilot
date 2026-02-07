@@ -167,12 +167,13 @@ const analyzeWithClaude = async (file) => {
       throw new Error(`API 오류: ${res.status} - ${errBody.slice(0, 200)}`);
     }
     const result = await res.json();
-    result.simulated = false;
-    return result;
+    // API는 항상 배열 반환
+    const items = Array.isArray(result) ? result : [result];
+    return items.map((r) => ({ ...r, simulated: false, fileName: file.name }));
   } catch (err) {
     console.error("⚠️ Claude API 실패, 시뮬레이터 대체:", err.message);
     alert(`Claude API 호출 실패: ${err.message}\n\n파일명 기반 시뮬레이션으로 대체됩니다.`);
-    return simulateFallback(file);
+    return [{ ...simulateFallback(file), fileName: file.name }];
   }
 };
 
@@ -360,9 +361,9 @@ const BulkUploadModal = ({ isOpen, onClose, onComplete, analyzing }) => {
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       try {
-        const result = await analyzeWithClaude(file);
-        result.fileName = file.name;
-        allResults.push(result);
+        const results = await analyzeWithClaude(file);
+        // analyzeWithClaude는 항상 배열 반환 (PDF에 영수증 여러장 가능)
+        allResults.push(...results);
       } catch (err) {
         console.error(`분석 실패: ${file.name}`, err);
         allResults.push({
@@ -1113,49 +1114,52 @@ export default function TravelExpenseV5() {
   const analyzeFile = useCallback(async (tripId, file) => {
     setAnalyzing(true);
     try {
-      const result = await analyzeWithClaude(file);
-      setTrips((prev) => prev.map((t) => {
-        if (t.id !== tripId) return t;
-        const att = { fileName: file.name, category: result.category, type: result.type, proofMetro: result.proofMetro, isProof: result.isProof, simulated: result.simulated || false };
-        let updated = { ...t, attachments: [...t.attachments, att] };
+      const results = await analyzeWithClaude(file);
+      // analyzeWithClaude는 항상 배열 반환
+      results.forEach((result) => {
+        setTrips((prev) => prev.map((t) => {
+          if (t.id !== tripId) return t;
+          const att = { fileName: file.name, category: result.category, type: result.type, proofMetro: result.proofMetro, isProof: result.isProof, simulated: result.simulated || false };
+          let updated = { ...t, attachments: [...t.attachments, att] };
 
-        if (result.type === "rail_receipt" && result.data) {
-          const d = result.data;
-          const newLeg = { ...emptyLeg(), from: d.from || "", to: d.to || "", transport: "rail", trainNo: d.trainNo || "", amount: d.amount || 0 };
-          if (updated.legs.length === 1 && !updated.legs[0].from && !updated.legs[0].to) {
-            updated.legs = [{ ...updated.legs[0], ...newLeg, id: updated.legs[0].id }];
-          } else {
-            updated.legs = [...updated.legs, newLeg];
+          if (result.type === "rail_receipt" && result.data) {
+            const d = result.data;
+            const newLeg = { ...emptyLeg(), from: d.from || "", to: d.to || "", transport: "rail", trainNo: d.trainNo || "", amount: d.amount || 0 };
+            if (updated.legs.length === 1 && !updated.legs[0].from && !updated.legs[0].to) {
+              updated.legs = [{ ...updated.legs[0], ...newLeg, id: updated.legs[0].id }];
+            } else {
+              updated.legs = [...updated.legs, newLeg];
+            }
           }
-        }
 
-        if (result.type === "lodging_receipt" && result.data) {
-          const d = result.data;
-          updated.lodgingAmount = d.amount || updated.lodgingAmount;
-          updated.noLodging = false;
-          if (d.address) {
-            const metro = detectMetro(d.address);
-            if (metro) updated.lodgingRegion = getLodgingRegion(metro);
+          if (result.type === "lodging_receipt" && result.data) {
+            const d = result.data;
+            updated.lodgingAmount = d.amount || updated.lodgingAmount;
+            updated.noLodging = false;
+            if (d.address) {
+              const metro = detectMetro(d.address);
+              if (metro) updated.lodgingRegion = getLodgingRegion(metro);
+            }
           }
-        }
 
-        if (result.type === "toll_receipt" && result.data) {
-          const existingTollLeg = updated.legs.find((l) => (l.transport === "personal_car" || l.transport === "official_car"));
-          if (existingTollLeg) {
-            updated.legs = updated.legs.map((l) => l.id === existingTollLeg.id ? { ...l, tollFee: (l.tollFee || 0) + (result.data.amount || 0) } : l);
+          if (result.type === "toll_receipt" && result.data) {
+            const existingTollLeg = updated.legs.find((l) => (l.transport === "personal_car" || l.transport === "official_car"));
+            if (existingTollLeg) {
+              updated.legs = updated.legs.map((l) => l.id === existingTollLeg.id ? { ...l, tollFee: (l.tollFee || 0) + (result.data.amount || 0) } : l);
+            }
           }
-        }
 
-        if (result.type === "map_capture" && result.data) {
-          const d = result.data;
-          const carLeg = updated.legs.find((l) => l.transport === "personal_car");
-          if (carLeg) {
-            updated.legs = updated.legs.map((l) => l.id === carLeg.id ? { ...l, km: d.distanceKm || l.km, from: d.from || l.from, to: d.to || l.to } : l);
+          if (result.type === "map_capture" && result.data) {
+            const d = result.data;
+            const carLeg = updated.legs.find((l) => l.transport === "personal_car");
+            if (carLeg) {
+              updated.legs = updated.legs.map((l) => l.id === carLeg.id ? { ...l, km: d.distanceKm || l.km, from: d.from || l.from, to: d.to || l.to } : l);
+            }
           }
-        }
 
-        return updated;
-      }));
+          return updated;
+        }));
+      });
     } finally {
       setAnalyzing(false);
     }
