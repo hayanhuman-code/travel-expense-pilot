@@ -137,10 +137,17 @@ const analyzeWithClaude = async (file) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ image: base64, mediaType, fileName: file.name }),
     });
-    if (!res.ok) throw new Error(`API 오류: ${res.status}`);
-    return await res.json();
+    if (!res.ok) {
+      const errBody = await res.text();
+      console.error("Claude API 호출 실패:", res.status, errBody);
+      throw new Error(`API 오류: ${res.status} - ${errBody}`);
+    }
+    const result = await res.json();
+    result.simulated = false;
+    return result;
   } catch (err) {
-    console.warn("Claude API 호출 실패, 시뮬레이터로 대체:", err.message);
+    console.error("⚠️ Claude API 실패, 시뮬레이터 대체:", err.message);
+    alert(`Claude API 호출 실패: ${err.message}\n\n파일명 기반 시뮬레이션으로 대체됩니다.`);
     return simulateFallback(file);
   }
 };
