@@ -121,17 +121,41 @@ const emptyTrip = () => ({
 });
 
 // ── Claude Vision API 호출 ──
-const analyzeWithClaude = async (file) => {
-  const toBase64 = (f) => new Promise((resolve, reject) => {
+// 이미지 압축 (Vercel 4.5MB 제한 대응)
+const compressImage = (file, maxWidth = 1280, quality = 0.8) => new Promise((resolve) => {
+  // PDF는 압축 불가 → 그대로 반환
+  if (file.type === "application/pdf") {
     const reader = new FileReader();
-    reader.onload = () => resolve(reader.result.split(",")[1]);
-    reader.onerror = reject;
-    reader.readAsDataURL(f);
-  });
+    reader.onload = () => resolve({ base64: reader.result.split(",")[1], mediaType: file.type });
+    reader.readAsDataURL(file);
+    return;
+  }
+  const img = new Image();
+  img.onload = () => {
+    const scale = Math.min(1, maxWidth / Math.max(img.width, img.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(img.width * scale);
+    canvas.height = Math.round(img.height * scale);
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL("image/jpeg", quality);
+    resolve({ base64: dataUrl.split(",")[1], mediaType: "image/jpeg" });
+  };
+  img.onerror = () => {
+    // 압축 실패 시 원본 그대로
+    const reader = new FileReader();
+    reader.onload = () => resolve({ base64: reader.result.split(",")[1], mediaType: file.type || "image/jpeg" });
+    reader.readAsDataURL(file);
+  };
+  const reader = new FileReader();
+  reader.onload = () => { img.src = reader.result; };
+  reader.readAsDataURL(file);
+});
 
+const analyzeWithClaude = async (file) => {
   try {
-    const base64 = await toBase64(file);
-    const mediaType = file.type || "image/jpeg";
+    const { base64, mediaType } = await compressImage(file);
+    console.log(`📎 ${file.name}: 압축 후 ${Math.round(base64.length / 1024)}KB`);
     const res = await fetch("/api/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -140,7 +164,7 @@ const analyzeWithClaude = async (file) => {
     if (!res.ok) {
       const errBody = await res.text();
       console.error("Claude API 호출 실패:", res.status, errBody);
-      throw new Error(`API 오류: ${res.status} - ${errBody}`);
+      throw new Error(`API 오류: ${res.status} - ${errBody.slice(0, 200)}`);
     }
     const result = await res.json();
     result.simulated = false;
