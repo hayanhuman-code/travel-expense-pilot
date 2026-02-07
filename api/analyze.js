@@ -213,21 +213,32 @@ const ANALYSIS_PROMPT = `당신은 한국 공공기관의 출장 영수증 분�
 주소를 확인할 수 없으면 빈 문자열("")로.
 가게명(storeName)은 "상호", "가맹점", "가맹점명" 옆에 표시된 이름을 사용하세요. 주소 근처에 있는 경우도 많습니다.
 
-■ 불확실성 표시 및 질문 (매우 중요! 적극적으로 질문하세요!)
-각 영수증 객체 안에 "questions" 필드를 추가하여 사용자에게 확인이 필요한 사항을 질문하세요.
-questions는 한국어 문자열 배열입니다.
+■ 신뢰도 (confidence) — 모든 영수증 객체에 반드시 포함!
+"confidence" 필드를 0.0~1.0 사이의 소수로 반드시 포함하세요.
+- 0.85~1.0: 영수증 유형, 금액, 날짜 등 모든 핵심 정보가 명확히 확인됨
+- 0.5~0.84: 일부 정보가 불확실하거나 글자가 흐림
+- 0.5 미만: 유형 판단이 어렵거나 핵심 정보를 읽을 수 없음
 
-반드시 질문해야 하는 경우 (무조건 questions 포함):
-1. 톨게이트 영수증 → 반드시 "자가차량(본인 소유)으로 이동하셨나요, 공용차량(관용차)으로 이동하셨나요?" 질문
-2. 글자가 흐리거나 잘려서 금액/날짜/가게명 등을 정확히 읽기 어려운 경우
+■ 비용 분류 (expenseCategory) — 모든 영수증 객체에 반드시 포함!
+"expenseCategory" 필드를 다음 3가지 중 하나로 반드시 포함하세요:
+- "교통비": rail_receipt, toll_receipt 유형 (철도, 톨게이트, 자가차량 등 교통 관련)
+- "숙박비": lodging_receipt 유형 (호텔, 모텔, 펜션 등 숙박)
+- "현지인증": local_receipt 유형 (편의점, 식당 등 현지 영수증으로 출장지 방문 증빙)
+- map_capture와 unknown은 "현지인증"으로 분류
+
+■ 불확실성 표시 및 질문
+confidence가 0.8 미만일 때만 "questions" 필드를 포함하세요.
+confidence 0.8 이상이면 questions를 포함하지 마세요 (자동 분류됩니다).
+questions는 한국어 문자열 배열이며, 여비정산 내역표에 필요한 정보만 물어보세요.
+
+질문이 필요한 경우:
+1. 톨게이트 영수증 → 반드시 confidence를 0.8 미만으로 설정하고 "자가차량(본인 소유)으로 이동하셨나요, 공용차량(관용차)으로 이동하셨나요?" 질문
+2. 글자가 흐리거나 잘려서 금액/날짜를 정확히 읽기 어려운 경우
 3. 영수증 유형이 애매한 경우 (예: 숙박인지 식당인지 불분명)
-4. 주소나 지역을 특정하기 어려운 경우
-5. 날짜를 확인할 수 없는 경우 → "영수증의 날짜를 확인할 수 없습니다. 이용 날짜가 언제인가요?"
-6. 금액이 불분명한 경우
+4. 날짜를 확인할 수 없는 경우 → "영수증의 날짜를 확인할 수 없습니다. 이용 날짜가 언제인가요?"
+5. 금액이 불분명한 경우
 
-예: "questions": ["자가차량(본인 소유)으로 이동하셨나요, 공용차량(관용차)으로 이동하셨나요?", "통행료가 4,800원이 맞나요?"]
-
-확신이 100% 높고 위 필수 질문 조건에 해당하지 않을 때만 questions를 생략하세요.`;
+예: "confidence": 0.6, "questions": ["자가차량(본인 소유)으로 이동하셨나요, 공용차량(관용차)으로 이동하셨나요?"]`;
 
 // ── 광역지자체 매핑 ──
 const METRO_MAP = {
@@ -274,10 +285,24 @@ function enrichResult(parsed, fileName) {
     proofMetro = detectMetro(parsed.data?.address);
   }
 
+  // expenseCategory 자동 매핑 (AI가 누락한 경우 대비)
+  let expenseCategory = parsed.expenseCategory;
+  if (!expenseCategory) {
+    if (parsed.type === "rail_receipt" || parsed.type === "toll_receipt") {
+      expenseCategory = "교통비";
+    } else if (parsed.type === "lodging_receipt") {
+      expenseCategory = "숙박비";
+    } else {
+      expenseCategory = "현지인증";
+    }
+  }
+
   return {
     ...parsed,
     proofMetro,
     isProof,
     simulated: false,
+    confidence: parsed.confidence ?? 0.5,
+    expenseCategory,
   };
 }

@@ -42,7 +42,10 @@ ${JSON.stringify(receiptData, null, 2)}
 - receiptData에는 항상 수정 반영된 최신 데이터를 포함.
 - 금액은 반드시 숫자(정수). 날짜는 YYYY-MM-DD.
 - 톨게이트 영수증에서 사용자가 "자가차량" → data에 "vehicleType": "personal_car" 추가.
-- 사용자가 "공용차량" → data에 "vehicleType": "official_car" 추가.`;
+- 사용자가 "공용차량" → data에 "vehicleType": "official_car" 추가.
+- receiptData에 "confidence" (0~1)와 "expenseCategory" ("교통비"/"숙박비"/"현지인증") 필드를 포함.
+- 사용자가 카테고리를 선택하면 expenseCategory를 해당 값으로 업데이트.
+- resolved 시 confidence를 1.0으로 설정.`;
 
     // 대화 메시지 구성 (user/assistant 교대 보장)
     const messages = [];
@@ -80,24 +83,33 @@ ${JSON.stringify(receiptData, null, 2)}
 
     console.log("QA request - messages count:", messages.length, "roles:", messages.map(m => m.role).join(","));
 
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+    const apiHeaders = {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    };
+    const apiBody = { max_tokens: 1024, system, messages };
+
+    // 1차: Haiku (빠르고 저렴)
+    let response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-5-20250929",
-        max_tokens: 1024,
-        system,
-        messages,
-      }),
+      headers: apiHeaders,
+      body: JSON.stringify({ ...apiBody, model: "claude-haiku-4-5-20251001" }),
     });
+
+    // Haiku 실패 시 Sonnet fallback
+    if (!response.ok) {
+      console.log("Haiku failed, falling back to Sonnet. Status:", response.status);
+      response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: apiHeaders,
+        body: JSON.stringify({ ...apiBody, model: "claude-sonnet-4-5-20250929" }),
+      });
+    }
 
     if (!response.ok) {
       const errText = await response.text();
-      console.error("Claude API error:", response.status, errText);
+      console.error("Claude API error (both models failed):", response.status, errText);
       return res.status(502).json({ error: `Claude API error: ${response.status}`, detail: errText });
     }
 
@@ -197,7 +209,7 @@ function detectMetro(text) {
 }
 
 function enrichResult(parsed) {
-  if (!parsed) return { type: "unknown", category: "기타", data: {}, proofMetro: null, isProof: false, simulated: false };
+  if (!parsed) return { type: "unknown", category: "기타", data: {}, proofMetro: null, isProof: false, simulated: false, confidence: 0.5, expenseCategory: "현지인증" };
   let proofMetro = null;
   let isProof = false;
 
@@ -211,10 +223,24 @@ function enrichResult(parsed) {
     proofMetro = detectMetro(parsed.data?.address);
   }
 
+  // expenseCategory 자동 매핑 (누락 시)
+  let expenseCategory = parsed.expenseCategory;
+  if (!expenseCategory) {
+    if (parsed.type === "rail_receipt" || parsed.type === "toll_receipt") {
+      expenseCategory = "교통비";
+    } else if (parsed.type === "lodging_receipt") {
+      expenseCategory = "숙박비";
+    } else {
+      expenseCategory = "현지인증";
+    }
+  }
+
   return {
     ...parsed,
     proofMetro,
     isProof,
     simulated: false,
+    confidence: parsed.confidence ?? 0.5,
+    expenseCategory,
   };
 }
