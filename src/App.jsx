@@ -31,7 +31,7 @@ const METRO_MAP = {
   세종: ["세종", "세종특별자치시", "세종시", "정부세종청사", "세종정부청사"],
   경기: ["경기", "경기도", "수원", "성남", "용인", "안양", "안산", "고양", "과천", "광명", "구리", "군포", "김포", "남양주", "동두천", "부천", "시흥", "안성", "양주", "양평", "여주", "오산", "의왕", "의정부", "이천", "파주", "평택", "포천", "하남", "화성"],
   강원: ["강원", "강원특별자치도", "강원도", "춘천", "원주", "강릉", "속초", "동해", "태백", "삼척"],
-  충북: ["충북", "충청북도", "청주", "충주", "제천", "괴산", "단양", "보은", "영동", "옥천", "음성", "진천", "증평"],
+  충북: ["충북", "충청북도", "청주", "충주", "제천", "괴산", "단양", "보은", "영동", "옥천", "음성", "진천", "증평", "오송"],
   충남: ["충남", "충청남도", "천안", "아산", "논산", "공주", "서산", "당진", "보령", "홍성", "예산", "태안", "부여"],
   전북: ["전북", "전북특별자치도", "전라북도", "전주", "익산", "군산", "정읍", "김제", "남원", "완주"],
   전남: ["전남", "전라남도", "목포", "여수", "순천", "나주", "광양", "무안", "해남", "담양"],
@@ -61,6 +61,13 @@ const detectMetro = (text) => {
     }
   }
   return null;
+};
+
+// 오송 → 식품의약품안전처 매핑
+const mapDestinationName = (dest) => {
+  if (!dest) return dest;
+  if (dest === "오송" || dest.includes("오송역")) return "식품의약품안전처";
+  return dest;
 };
 
 const getLodgingRegion = (metro) => {
@@ -282,7 +289,7 @@ const groupReceiptsIntoTrips = (results) => {
         // 출장지 추론: 서울/행신이 아닌 도착지를 출장지로
         const to = d.to || "";
         if (to && !["서울", "행신", "용산", "수서", "청량리"].includes(to)) {
-          inferredDestination = to;
+          inferredDestination = mapDestinationName(to);
         }
       }
 
@@ -303,19 +310,26 @@ const groupReceiptsIntoTrips = (results) => {
         inferredDestination = r.proofMetro;
       }
 
-      // 톨게이트 영수증
+      // 톨게이트 영수증 → 차량 구간에 톨비 반영 (없으면 자가차량 구간 생성)
       if (r.type === "toll_receipt" && r.data) {
         const existingCarLeg = trip.legs.find((l) =>
           l.transport === "personal_car" || l.transport === "official_car"
         );
         if (existingCarLeg) {
           existingCarLeg.tollFee = (existingCarLeg.tollFee || 0) + (r.data.amount || 0);
+        } else {
+          // 차량 구간이 없으면 자가차량 구간 생성 (Q&A에서 공용차량 여부 확인 가능)
+          trip.legs.push({
+            ...emptyLeg(),
+            transport: "personal_car",
+            tollFee: r.data.amount || 0,
+          });
         }
       }
     });
 
-    // 출장지 설정
-    trip.destination = inferredDestination;
+    // 출장지 설정 (오송 → 식품의약품안전처 매핑)
+    trip.destination = mapDestinationName(inferredDestination);
     trip.destinationMetro = detectMetro(inferredDestination);
 
     // 구간이 없으면 기본 빈 구간 추가
@@ -972,16 +986,16 @@ const TripCard = ({ trip, index, onUpdate, onRemove, canRemove, isExecutive, ana
             {/* 일비/식비 */}
             <div className="bg-gray-50 rounded-lg p-3">
               <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-semibold text-gray-600">일비: {(hasOfficialCar ? DAILY_ALLOWANCE_HALF : DAILY_ALLOWANCE).toLocaleString()}원</span>
-                {hasOfficialCar && <span className="text-xs text-sky-600">공용차량 50% 감액</span>}
+                <span className="text-xs font-semibold text-gray-600">💰 일비: {(hasOfficialCar ? DAILY_ALLOWANCE_HALF : DAILY_ALLOWANCE).toLocaleString()}원</span>
+                {hasOfficialCar && <span className="text-xs text-sky-600">🚐 공용차량 50% 감액</span>}
               </div>
-              <span className="text-xs font-semibold text-gray-600 mb-1 block">식비 (제공된 식사 선택)</span>
+              <span className="text-xs font-semibold text-gray-600 mb-1 block">🍽️ 식비 (제공된 식사 선택)</span>
               <div className="flex gap-1.5">
                 <button onClick={() => { u("noMeal", true); u("breakfast", false); u("lunch", false); u("dinner", false); }}
                   className={`flex-1 py-1.5 rounded text-xs border transition-all ${trip.noMeal ? "bg-red-500 text-white border-red-500" : "bg-white text-gray-500 border-gray-200"}`}>
-                  해당없음
+                  🚫 해당없음
                 </button>
-                {[["breakfast", "조식"], ["lunch", "중식"], ["dinner", "석식"]].map(([key, label]) => (
+                {[["breakfast", "🌅 조식"], ["lunch", "☀️ 중식"], ["dinner", "🌙 석식"]].map(([key, label]) => (
                   <button key={key} onClick={() => { u("noMeal", false); u(key, !trip[key]); }}
                     className={`flex-1 py-1.5 rounded text-xs border transition-all ${!trip.noMeal && trip[key] ? "bg-orange-500 text-white border-orange-500" : "bg-white text-gray-500 border-gray-200"}`}>
                     {label} 제공
@@ -997,15 +1011,15 @@ const TripCard = ({ trip, index, onUpdate, onRemove, canRemove, isExecutive, ana
 
             {/* 숙박비 */}
             <div className="bg-gray-50 rounded-lg p-3">
-              <span className="text-xs font-semibold text-gray-600 mb-1 block">숙박비</span>
+              <span className="text-xs font-semibold text-gray-600 mb-1 block">🏨 숙박비</span>
               <div className="flex gap-1.5 mb-1.5">
                 <button onClick={() => u("noLodging", true)}
                   className={`flex-1 py-1.5 rounded text-xs border transition-all ${trip.noLodging ? "bg-red-500 text-white border-red-500" : "bg-white text-gray-500 border-gray-200"}`}>
-                  해당없음
+                  🚫 해당없음
                 </button>
                 {(isExecutive
-                  ? [["실비", "실비"]]
-                  : Object.entries(LODGING_LIMITS_STAFF).map(([r, l]) => [r, `${r}(${(l / 10000)}만)`])
+                  ? [["실비", "💰 실비"]]
+                  : Object.entries(LODGING_LIMITS_STAFF).map(([r, l]) => [r, `🏠 ${r}(${(l / 10000)}만)`])
                 ).map(([val, label]) => (
                   <button key={val} onClick={() => { u("noLodging", false); u("lodgingRegion", val); }}
                     className={`flex-1 py-1.5 rounded text-xs border transition-all ${!trip.noLodging && trip.lodgingRegion === val ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-500 border-gray-200"}`}>
@@ -1369,6 +1383,14 @@ export default function TravelExpenseV5() {
             const existingTollLeg = updated.legs.find((l) => (l.transport === "personal_car" || l.transport === "official_car"));
             if (existingTollLeg) {
               updated.legs = updated.legs.map((l) => l.id === existingTollLeg.id ? { ...l, tollFee: (l.tollFee || 0) + (result.data.amount || 0) } : l);
+            } else {
+              // 차량 구간이 없으면 자가차량 구간 생성
+              const carLeg = { ...emptyLeg(), transport: "personal_car", tollFee: result.data.amount || 0 };
+              if (updated.legs.length === 1 && !updated.legs[0].to && updated.legs[0].transport === "rail") {
+                updated.legs = [{ ...updated.legs[0], ...carLeg, id: updated.legs[0].id }];
+              } else {
+                updated.legs = [...updated.legs, carLeg];
+              }
             }
           }
 
