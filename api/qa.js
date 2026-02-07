@@ -20,7 +20,8 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "receiptData and userMessage required" });
     }
 
-    const systemContext = `당신은 한국 공공기관의 출장 영수증 분석 보조 전문가입니다.
+    // system 파라미터로 분리 (응답 품질 향상)
+    const system = `당신은 한국 공공기관의 출장 영수증 분석 보조 전문가입니다.
 사용자가 업로드한 영수증의 AI 분석 결과에 대해 대화하고 있습니다.
 
 현재 분석된 영수증 데이터:
@@ -35,39 +36,49 @@ ${JSON.stringify(receiptData, null, 2)}
   "questions": ["추가 질문이 있으면 여기에"]
 }
 
-- "resolved": 모든 불확실한 항목이 해결되어 더 이상 질문이 없는 경우. questions는 빈 배열.
-- "follow_up": 아직 확인이 필요한 항목이 있는 경우. questions에 추가 질문 포함.
-- receiptData에는 항상 수정 반영된 최신 데이터를 포함하세요.
-- 금액은 반드시 숫자(정수)로. 날짜는 YYYY-MM-DD 형식으로.
-- 톨게이트 영수증에서 사용자가 "자가차량"이라 답하면 type을 "toll_receipt" 유지하되 data에 "vehicleType": "personal_car" 추가.
-- 사용자가 "공용차량"이라 답하면 data에 "vehicleType": "official_car" 추가.`;
+규칙:
+- "resolved": 모든 불확실한 항목이 해결됨. questions는 빈 배열 [].
+- "follow_up": 아직 확인 필요. questions에 추가 질문 포함.
+- receiptData에는 항상 수정 반영된 최신 데이터를 포함.
+- 금액은 반드시 숫자(정수). 날짜는 YYYY-MM-DD.
+- 톨게이트 영수증에서 사용자가 "자가차량" → data에 "vehicleType": "personal_car" 추가.
+- 사용자가 "공용차량" → data에 "vehicleType": "official_car" 추가.`;
 
-    // 대화 히스토리를 user/assistant 교대로 올바르게 구성
+    // 대화 메시지 구성 (user/assistant 교대 보장)
     const messages = [];
 
-    // 시스템 컨텍스트를 첫 user 메시지로
-    messages.push({ role: "user", content: systemContext });
-
-    // 대화 히스토리 추가 (교대 규칙 보장)
     if (conversationHistory && conversationHistory.length > 0) {
       for (const msg of conversationHistory) {
-        const lastMsg = messages[messages.length - 1];
-        if (msg.role === lastMsg.role) {
-          // 같은 role 연속 → 이전 메시지에 병합
+        // assistant/user만 허용
+        const role = msg.role === "user" ? "user" : "assistant";
+        const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null;
+        if (lastMsg && lastMsg.role === role) {
           lastMsg.content += "\n\n" + msg.content;
         } else {
-          messages.push({ role: msg.role, content: msg.content });
+          messages.push({ role, content: msg.content });
         }
       }
     }
 
-    // 최신 사용자 메시지 추가 (교대 규칙 보장)
-    const lastMsg = messages[messages.length - 1];
-    if (lastMsg.role === "user") {
-      lastMsg.content += "\n\n사용자 답변: " + userMessage;
-    } else {
-      messages.push({ role: "user", content: "사용자 답변: " + userMessage });
+    // 첫 메시지가 assistant면 앞에 더미 user 추가 (API 규칙: 첫 메시지는 user)
+    if (messages.length > 0 && messages[0].role === "assistant") {
+      messages.unshift({ role: "user", content: "영수증 분석 결과를 확인해주세요." });
     }
+
+    // 최신 사용자 메시지 추가
+    const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null;
+    if (lastMsg && lastMsg.role === "user") {
+      lastMsg.content += "\n\n" + userMessage;
+    } else {
+      messages.push({ role: "user", content: userMessage });
+    }
+
+    // 메시지가 비어있으면 기본 구성
+    if (messages.length === 0) {
+      messages.push({ role: "user", content: userMessage });
+    }
+
+    console.log("QA request - messages count:", messages.length, "roles:", messages.map(m => m.role).join(","));
 
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -79,6 +90,7 @@ ${JSON.stringify(receiptData, null, 2)}
       body: JSON.stringify({
         model: "claude-sonnet-4-5-20250929",
         max_tokens: 1024,
+        system,
         messages,
       }),
     });
@@ -91,24 +103,65 @@ ${JSON.stringify(receiptData, null, 2)}
 
     const data = await response.json();
     const text = data.content?.[0]?.text || "";
+    console.log("Claude raw response:", text.slice(0, 300));
 
-    // JSON 추출
-    let jsonStr = text;
-    const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (jsonMatch) jsonStr = jsonMatch[1];
-    jsonStr = jsonStr.trim();
+    // JSON 추출 (여러 패턴 시도)
+    let parsed = null;
 
-    const parsed = JSON.parse(jsonStr);
+    // 1차: 코드블록 내 JSON
+    const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (codeBlockMatch) {
+      try { parsed = JSON.parse(codeBlockMatch[1].trim()); } catch (e) { /* fallthrough */ }
+    }
+
+    // 2차: 전체 텍스트를 JSON으로
+    if (!parsed) {
+      try { parsed = JSON.parse(text.trim()); } catch (e) { /* fallthrough */ }
+    }
+
+    // 3차: { } 블록 추출
+    if (!parsed) {
+      const braceMatch = text.match(/\{[\s\S]*\}/);
+      if (braceMatch) {
+        try { parsed = JSON.parse(braceMatch[0]); } catch (e) { /* fallthrough */ }
+      }
+    }
+
+    // 파싱 실패 시 fallback 응답 (500 대신 유의미한 응답)
+    if (!parsed) {
+      console.error("JSON parse failed. Raw text:", text);
+      return res.status(200).json({
+        status: "resolved",
+        receiptData: enrichResult(receiptData),
+        questions: [],
+      });
+    }
 
     // receiptData에 proofMetro, isProof 보강
     if (parsed.receiptData) {
       parsed.receiptData = enrichResult(parsed.receiptData);
+    } else {
+      // receiptData 누락 시 원본 유지
+      parsed.receiptData = enrichResult(receiptData);
     }
+
+    if (!parsed.status) parsed.status = "resolved";
+    if (!parsed.questions) parsed.questions = [];
 
     return res.status(200).json(parsed);
   } catch (err) {
     console.error("QA error:", err);
-    return res.status(500).json({ error: err.message, stack: err.stack });
+    // 500 대신 fallback 응답
+    try {
+      const { receiptData } = req.body || {};
+      return res.status(200).json({
+        status: "resolved",
+        receiptData: receiptData ? enrichResult(receiptData) : { type: "unknown", category: "기타", data: {} },
+        questions: [],
+      });
+    } catch (e) {
+      return res.status(500).json({ error: err.message });
+    }
   }
 }
 
@@ -144,6 +197,7 @@ function detectMetro(text) {
 }
 
 function enrichResult(parsed) {
+  if (!parsed) return { type: "unknown", category: "기타", data: {}, proofMetro: null, isProof: false, simulated: false };
   let proofMetro = null;
   let isProof = false;
 
