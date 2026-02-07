@@ -54,7 +54,7 @@ export default async function handler(req, res) {
     if (!response.ok) {
       const errText = await response.text();
       console.error("Claude API error:", response.status, errText);
-      return res.status(502).json({ error: `Claude API error: ${response.status}` });
+      return res.status(502).json({ error: `Claude API error: ${response.status}`, detail: errText });
     }
 
     const data = await response.json();
