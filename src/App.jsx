@@ -335,7 +335,7 @@ const groupReceiptsIntoTrips = (results) => {
 };
 
 // ═══════════════ 일괄 업로드 모달 ═══════════════
-const BulkUploadModal = ({ isOpen, onClose, onComplete, analyzing }) => {
+const BulkUploadModal = ({ isOpen, onClose, onComplete, analyzing, onRequestQA }) => {
   const [files, setFiles] = useState([]);
   const [results, setResults] = useState([]);
   const [step, setStep] = useState("select"); // select → analyzing → preview → done
@@ -363,7 +363,15 @@ const BulkUploadModal = ({ isOpen, onClose, onComplete, analyzing }) => {
       try {
         const results = await analyzeWithClaude(file);
         // analyzeWithClaude는 항상 배열 반환 (PDF에 영수증 여러장 가능)
-        allResults.push(...results);
+        for (const result of results) {
+          if (result.questions && result.questions.length > 0 && onRequestQA) {
+            // Q&A 모달로 확인 요청 → 수정된 데이터 반환 대기
+            const updated = await onRequestQA(result);
+            allResults.push({ ...updated, fileName: result.fileName });
+          } else {
+            allResults.push(result);
+          }
+        }
       } catch (err) {
         console.error(`분석 실패: ${file.name}`, err);
         allResults.push({
@@ -542,6 +550,192 @@ const BulkUploadModal = ({ isOpen, onClose, onComplete, analyzing }) => {
   );
 };
 
+
+// ═══════════════ Q&A 채팅 모달 ═══════════════
+const QAModal = ({ isOpen, onClose, receiptResult, onResolved }) => {
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [resolvedData, setResolvedData] = useState(null);
+  const chatEndRef = useRef(null);
+
+  // 모달 열릴 때 초기 질문 세팅
+  const prevOpenRef = useRef(false);
+  if (isOpen && !prevOpenRef.current && receiptResult?.questions?.length > 0) {
+    const initialMsg = {
+      role: "assistant",
+      content: `영수증 분석 결과를 확인하고 싶은 부분이 있습니다.\n\n${receiptResult.questions.map((q, i) => `${i + 1}. ${q}`).join("\n")}`,
+    };
+    // Reset state for new modal open
+    setMessages([initialMsg]);
+    setInput("");
+    setLoading(false);
+    setResolvedData(null);
+  }
+  prevOpenRef.current = isOpen;
+
+  const scrollToBottom = () => {
+    setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
+  };
+
+  const sendMessage = async () => {
+    if (!input.trim() || loading) return;
+    const userMsg = { role: "user", content: input.trim() };
+    const newMessages = [...messages, userMsg];
+    setMessages(newMessages);
+    setInput("");
+    setLoading(true);
+    scrollToBottom();
+
+    try {
+      const res = await fetch("/api/qa", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          receiptData: receiptResult,
+          conversationHistory: newMessages.slice(0, -1), // 이전 히스토리
+          userMessage: userMsg.content,
+        }),
+      });
+
+      if (!res.ok) throw new Error(`API 오류: ${res.status}`);
+      const data = await res.json();
+
+      if (data.status === "resolved") {
+        setResolvedData(data.receiptData);
+        setMessages((prev) => [...prev, {
+          role: "assistant",
+          content: "확인 완료! 수정된 내용을 아래에서 확인하고 적용해 주세요.",
+        }]);
+      } else {
+        // follow_up
+        const followUpMsg = data.questions?.length > 0
+          ? data.questions.map((q, i) => `${i + 1}. ${q}`).join("\n")
+          : "추가 정보가 필요합니다.";
+        setMessages((prev) => [...prev, { role: "assistant", content: followUpMsg }]);
+        // 중간 데이터 업데이트
+        if (data.receiptData) setResolvedData(data.receiptData);
+      }
+    } catch (err) {
+      setMessages((prev) => [...prev, {
+        role: "assistant",
+        content: `오류가 발생했습니다: ${err.message}\n다시 시도하거나 건너뛰기를 눌러주세요.`,
+      }]);
+    } finally {
+      setLoading(false);
+      scrollToBottom();
+    }
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  };
+
+  const handleSkip = () => {
+    onResolved(receiptResult); // 원본 데이터 그대로
+  };
+
+  const handleApply = () => {
+    onResolved(resolvedData || receiptResult);
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4">
+      <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full max-h-[85vh] overflow-hidden flex flex-col">
+        {/* 헤더 */}
+        <div className="bg-gradient-to-r from-violet-600 to-indigo-600 px-5 py-3 flex items-center justify-between">
+          <div>
+            <h3 className="text-white font-bold text-sm">💬 영수증 확인 대화</h3>
+            <p className="text-violet-200 text-xs mt-0.5">AI가 확인이 필요한 항목을 질문합니다</p>
+          </div>
+          <button onClick={handleSkip} className="text-white/70 hover:text-white text-lg">✕</button>
+        </div>
+
+        {/* 채팅 영역 */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-3 min-h-[200px] max-h-[400px]">
+          {messages.map((msg, i) => (
+            <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+              <div className={`max-w-[80%] rounded-2xl px-4 py-2.5 text-sm whitespace-pre-wrap ${
+                msg.role === "user"
+                  ? "bg-violet-600 text-white rounded-br-md"
+                  : "bg-gray-100 text-gray-800 rounded-bl-md"
+              }`}>
+                {msg.content}
+              </div>
+            </div>
+          ))}
+          {loading && (
+            <div className="flex justify-start">
+              <div className="bg-gray-100 rounded-2xl rounded-bl-md px-4 py-2.5 text-sm text-gray-400">
+                <span className="animate-pulse">AI가 답변을 작성하고 있습니다...</span>
+              </div>
+            </div>
+          )}
+          <div ref={chatEndRef} />
+        </div>
+
+        {/* 수정 결과 미리보기 */}
+        {resolvedData && (
+          <div className="mx-4 mb-2 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
+            <p className="text-xs font-semibold text-emerald-700 mb-1">수정된 데이터:</p>
+            <div className="text-xs text-emerald-600 space-y-0.5">
+              {resolvedData.data?.date && <p>날짜: {resolvedData.data.date}</p>}
+              {resolvedData.data?.amount != null && <p>금액: {Number(resolvedData.data.amount).toLocaleString()}원</p>}
+              {resolvedData.data?.storeName && <p>가게명: {resolvedData.data.storeName}</p>}
+              {resolvedData.data?.hotelName && <p>숙소명: {resolvedData.data.hotelName}</p>}
+              {resolvedData.data?.from && <p>출발: {resolvedData.data.from}</p>}
+              {resolvedData.data?.to && <p>도착: {resolvedData.data.to}</p>}
+              {resolvedData.data?.trainNo && <p>열차: {resolvedData.data.trainNo}</p>}
+              {resolvedData.data?.address && <p>주소: {resolvedData.data.address}</p>}
+            </div>
+          </div>
+        )}
+
+        {/* 입력 영역 */}
+        <div className="border-t border-gray-200 px-4 py-3">
+          <div className="flex gap-2">
+            <input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="답변을 입력하세요..."
+              disabled={loading}
+              className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-violet-500 disabled:bg-gray-50"
+            />
+            <button
+              onClick={sendMessage}
+              disabled={!input.trim() || loading}
+              className="px-4 py-2 bg-violet-600 text-white rounded-lg text-sm font-semibold hover:bg-violet-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-all"
+            >
+              전송
+            </button>
+          </div>
+          <div className="flex gap-2 mt-2">
+            <button
+              onClick={handleSkip}
+              className="flex-1 py-2 border border-gray-300 rounded-lg text-xs text-gray-600 hover:bg-gray-50 transition-all"
+            >
+              건너뛰기 (원본 유지)
+            </button>
+            {resolvedData && (
+              <button
+                onClick={handleApply}
+                className="flex-1 py-2 bg-emerald-600 text-white rounded-lg text-xs font-semibold hover:bg-emerald-700 transition-all"
+              >
+                적용하기
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 // ═══════════════ 구간 카드 ═══════════════
 const LegCard = ({ leg, index, total, onUpdate, onRemove, canRemove, isExecutive }) => {
@@ -1100,7 +1294,30 @@ export default function TravelExpenseV5() {
   const [analyzing, setAnalyzing] = useState(false);
   const [showBulkModal, setShowBulkModal] = useState(false);
 
+  // Q&A 모달 상태
+  const [showQAModal, setShowQAModal] = useState(false);
+  const [qaReceiptResult, setQaReceiptResult] = useState(null);
+  const qaResolveRef = useRef(null);
+
   const isExec = userGrade === "executive";
+
+  // Q&A: Promise 기반 모달 대기
+  const waitForQA = useCallback((receiptResult) => {
+    return new Promise((resolve) => {
+      qaResolveRef.current = resolve;
+      setQaReceiptResult(receiptResult);
+      setShowQAModal(true);
+    });
+  }, []);
+
+  const handleQAResolved = useCallback((updatedData) => {
+    if (qaResolveRef.current) {
+      qaResolveRef.current(updatedData);
+      qaResolveRef.current = null;
+    }
+    setShowQAModal(false);
+    setQaReceiptResult(null);
+  }, []);
 
   const addTrip = () => setTrips((p) => [...p, emptyTrip()]);
   const removeTrip = (id) => setTrips((p) => p.length > 1 ? p.filter((t) => t.id !== id) : p);
@@ -1109,7 +1326,18 @@ export default function TravelExpenseV5() {
   const analyzeFile = useCallback(async (tripId, file) => {
     setAnalyzing(true);
     try {
-      const results = await analyzeWithClaude(file);
+      let results = await analyzeWithClaude(file);
+      // Q&A: questions가 있는 결과는 사용자 확인 후 업데이트
+      const processedResults = [];
+      for (const result of results) {
+        if (result.questions && result.questions.length > 0) {
+          const updated = await waitForQA(result);
+          processedResults.push({ ...updated, fileName: result.fileName });
+        } else {
+          processedResults.push(result);
+        }
+      }
+      results = processedResults;
       // analyzeWithClaude는 항상 배열 반환
       results.forEach((result) => {
         setTrips((prev) => prev.map((t) => {
@@ -1158,7 +1386,7 @@ export default function TravelExpenseV5() {
     } finally {
       setAnalyzing(false);
     }
-  }, []);
+  }, [waitForQA]);
 
   // v5: 일괄 업로드 결과 반영
   const handleBulkComplete = useCallback((newTrips) => {
@@ -1244,6 +1472,15 @@ export default function TravelExpenseV5() {
         onClose={() => setShowBulkModal(false)}
         onComplete={handleBulkComplete}
         analyzing={analyzing}
+        onRequestQA={waitForQA}
+      />
+
+      {/* Q&A 채팅 모달 */}
+      <QAModal
+        isOpen={showQAModal}
+        onClose={() => handleQAResolved(qaReceiptResult)}
+        receiptResult={qaReceiptResult}
+        onResolved={handleQAResolved}
       />
     </div>
   );
