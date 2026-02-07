@@ -310,18 +310,19 @@ const groupReceiptsIntoTrips = (results) => {
         inferredDestination = r.proofMetro;
       }
 
-      // 톨게이트 영수증 → 차량 구간에 톨비 반영 (없으면 자가차량 구간 생성)
+      // 톨게이트 영수증 → 차량 구간에 톨비 반영 (없으면 차량 구간 생성)
       if (r.type === "toll_receipt" && r.data) {
+        const vehicleType = r.data.vehicleType || "personal_car";
         const existingCarLeg = trip.legs.find((l) =>
           l.transport === "personal_car" || l.transport === "official_car"
         );
         if (existingCarLeg) {
           existingCarLeg.tollFee = (existingCarLeg.tollFee || 0) + (r.data.amount || 0);
+          existingCarLeg.transport = vehicleType;
         } else {
-          // 차량 구간이 없으면 자가차량 구간 생성 (Q&A에서 공용차량 여부 확인 가능)
           trip.legs.push({
             ...emptyLeg(),
-            transport: "personal_car",
+            transport: vehicleType,
             tollFee: r.data.amount || 0,
           });
         }
@@ -566,25 +567,89 @@ const BulkUploadModal = ({ isOpen, onClose, onComplete, analyzing, onRequestQA }
 
 
 // ═══════════════ Q&A 채팅 모달 ═══════════════
+
+// 영수증 타입별 아이콘/라벨
+const RECEIPT_TYPE_INFO = {
+  rail_receipt: { icon: "🚄", label: "철도영수증" },
+  lodging_receipt: { icon: "🏨", label: "숙박영수증" },
+  toll_receipt: { icon: "🛣️", label: "톨게이트영수증" },
+  local_receipt: { icon: "🧾", label: "현지영수증" },
+  map_capture: { icon: "🗺️", label: "지도캡처" },
+  unknown: { icon: "📄", label: "기타" },
+};
+
+// 질문에서 선택지 자동 생성
+const generateChoices = (question, receiptType) => {
+  const q = question.toLowerCase();
+  // 차량 종류 질문
+  if (q.includes("자가차량") || q.includes("공용차량") || q.includes("차량")) {
+    return [
+      { label: "🚗 자가차량 (본인 소유)", value: "자가차량으로 이동했습니다" },
+      { label: "🚐 공용차량 (관용차)", value: "공용차량으로 이동했습니다" },
+    ];
+  }
+  // 맞나요 질문 (금액, 날짜 등)
+  if (q.includes("맞나요") || q.includes("맞습니까")) {
+    return [
+      { label: "✅ 네, 맞습니다", value: "네, 맞습니다" },
+      { label: "❌ 아니요, 다릅니다", value: "아니요, 다릅니다" },
+    ];
+  }
+  // 날짜 질문
+  if (q.includes("날짜") || q.includes("언제")) {
+    return [
+      { label: "📅 오늘", value: `날짜는 ${new Date().toISOString().slice(0, 10)}입니다` },
+      { label: "📅 어제", value: `날짜는 ${new Date(Date.now() - 86400000).toISOString().slice(0, 10)}입니다` },
+    ];
+  }
+  return [];
+};
+
+// 영수증 요약 텍스트 생성
+const receiptSummary = (r) => {
+  if (!r) return "";
+  const d = r.data || {};
+  const info = RECEIPT_TYPE_INFO[r.type] || RECEIPT_TYPE_INFO.unknown;
+  let summary = `${info.icon} ${info.label}`;
+  if (r.fileName) summary += ` (${r.fileName})`;
+  const details = [];
+  if (d.date) details.push(`날짜: ${d.date}`);
+  if (d.amount != null) details.push(`금액: ${Number(d.amount).toLocaleString()}원`);
+  if (d.storeName) details.push(`가게: ${d.storeName}`);
+  if (d.hotelName) details.push(`숙소: ${d.hotelName}`);
+  if (d.from && d.to) details.push(`${d.from} → ${d.to}`);
+  if (d.trainNo) details.push(`열차: ${d.trainNo}`);
+  if (d.tollGate) details.push(`톨게이트: ${d.tollGate}`);
+  if (d.address) details.push(`주소: ${d.address}`);
+  if (details.length > 0) summary += "\n" + details.join(" · ");
+  return summary;
+};
+
 const QAModal = ({ isOpen, onClose, receiptResult, onResolved }) => {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [resolvedData, setResolvedData] = useState(null);
+  const [currentChoices, setCurrentChoices] = useState([]);
   const chatEndRef = useRef(null);
 
   // 모달 열릴 때 초기 질문 세팅
   const prevOpenRef = useRef(false);
   if (isOpen && !prevOpenRef.current && receiptResult?.questions?.length > 0) {
+    const summary = receiptSummary(receiptResult);
     const initialMsg = {
       role: "assistant",
-      content: `영수증 분석 결과를 확인하고 싶은 부분이 있습니다.\n\n${receiptResult.questions.map((q, i) => `${i + 1}. ${q}`).join("\n")}`,
+      content: `📋 분석된 영수증 정보:\n${summary}\n\n❓ 확인이 필요한 항목:\n${receiptResult.questions.map((q, i) => `${i + 1}. ${q}`).join("\n")}`,
     };
-    // Reset state for new modal open
     setMessages([initialMsg]);
     setInput("");
     setLoading(false);
     setResolvedData(null);
+    // 첫 질문에 대한 선택지 생성
+    const allChoices = receiptResult.questions.flatMap((q) => generateChoices(q, receiptResult.type));
+    // 중복 제거
+    const seen = new Set();
+    setCurrentChoices(allChoices.filter((c) => { if (seen.has(c.value)) return false; seen.add(c.value); return true; }));
   }
   prevOpenRef.current = isOpen;
 
@@ -592,12 +657,13 @@ const QAModal = ({ isOpen, onClose, receiptResult, onResolved }) => {
     setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
   };
 
-  const sendMessage = async () => {
-    if (!input.trim() || loading) return;
-    const userMsg = { role: "user", content: input.trim() };
+  const submitAnswer = async (answer) => {
+    if (!answer.trim() || loading) return;
+    const userMsg = { role: "user", content: answer.trim() };
     const newMessages = [...messages, userMsg];
     setMessages(newMessages);
     setInput("");
+    setCurrentChoices([]);
     setLoading(true);
     scrollToBottom();
 
@@ -607,7 +673,7 @@ const QAModal = ({ isOpen, onClose, receiptResult, onResolved }) => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           receiptData: receiptResult,
-          conversationHistory: newMessages.slice(0, -1), // 이전 히스토리
+          conversationHistory: newMessages.slice(0, -1),
           userMessage: userMsg.content,
         }),
       });
@@ -617,18 +683,24 @@ const QAModal = ({ isOpen, onClose, receiptResult, onResolved }) => {
 
       if (data.status === "resolved") {
         setResolvedData(data.receiptData);
+        const updatedSummary = receiptSummary(data.receiptData);
         setMessages((prev) => [...prev, {
           role: "assistant",
-          content: "확인 완료! 수정된 내용을 아래에서 확인하고 적용해 주세요.",
+          content: `✅ 확인 완료!\n\n📋 수정된 정보:\n${updatedSummary}\n\n아래 "적용하기" 버튼을 눌러주세요.`,
         }]);
+        setCurrentChoices([]);
       } else {
-        // follow_up
         const followUpMsg = data.questions?.length > 0
-          ? data.questions.map((q, i) => `${i + 1}. ${q}`).join("\n")
+          ? `추가 확인이 필요합니다:\n${data.questions.map((q, i) => `${i + 1}. ${q}`).join("\n")}`
           : "추가 정보가 필요합니다.";
         setMessages((prev) => [...prev, { role: "assistant", content: followUpMsg }]);
-        // 중간 데이터 업데이트
         if (data.receiptData) setResolvedData(data.receiptData);
+        // 추가 질문에 대한 선택지
+        if (data.questions?.length > 0) {
+          const newChoices = data.questions.flatMap((q) => generateChoices(q, receiptResult.type));
+          const seen = new Set();
+          setCurrentChoices(newChoices.filter((c) => { if (seen.has(c.value)) return false; seen.add(c.value); return true; }));
+        }
       }
     } catch (err) {
       setMessages((prev) => [...prev, {
@@ -644,12 +716,12 @@ const QAModal = ({ isOpen, onClose, receiptResult, onResolved }) => {
   const handleKeyDown = (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      sendMessage();
+      submitAnswer(input);
     }
   };
 
   const handleSkip = () => {
-    onResolved(receiptResult); // 원본 데이터 그대로
+    onResolved(receiptResult);
   };
 
   const handleApply = () => {
@@ -664,8 +736,11 @@ const QAModal = ({ isOpen, onClose, receiptResult, onResolved }) => {
         {/* 헤더 */}
         <div className="bg-gradient-to-r from-violet-600 to-indigo-600 px-5 py-3 flex items-center justify-between">
           <div>
-            <h3 className="text-white font-bold text-sm">💬 영수증 확인 대화</h3>
-            <p className="text-violet-200 text-xs mt-0.5">AI가 확인이 필요한 항목을 질문합니다</p>
+            <h3 className="text-white font-bold text-sm">💬 영수증 확인</h3>
+            <p className="text-violet-200 text-xs mt-0.5">
+              {receiptResult?.fileName && `📎 ${receiptResult.fileName}`}
+              {receiptResult?.type && ` · ${(RECEIPT_TYPE_INFO[receiptResult.type] || RECEIPT_TYPE_INFO.unknown).label}`}
+            </p>
           </div>
           <button onClick={handleSkip} className="text-white/70 hover:text-white text-lg">✕</button>
         </div>
@@ -674,7 +749,7 @@ const QAModal = ({ isOpen, onClose, receiptResult, onResolved }) => {
         <div className="flex-1 overflow-y-auto p-4 space-y-3 min-h-[200px] max-h-[400px]">
           {messages.map((msg, i) => (
             <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-              <div className={`max-w-[80%] rounded-2xl px-4 py-2.5 text-sm whitespace-pre-wrap ${
+              <div className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm whitespace-pre-wrap ${
                 msg.role === "user"
                   ? "bg-violet-600 text-white rounded-br-md"
                   : "bg-gray-100 text-gray-800 rounded-bl-md"
@@ -696,17 +771,34 @@ const QAModal = ({ isOpen, onClose, receiptResult, onResolved }) => {
         {/* 수정 결과 미리보기 */}
         {resolvedData && (
           <div className="mx-4 mb-2 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
-            <p className="text-xs font-semibold text-emerald-700 mb-1">수정된 데이터:</p>
+            <p className="text-xs font-semibold text-emerald-700 mb-1">📋 수정된 데이터:</p>
             <div className="text-xs text-emerald-600 space-y-0.5">
-              {resolvedData.data?.date && <p>날짜: {resolvedData.data.date}</p>}
-              {resolvedData.data?.amount != null && <p>금액: {Number(resolvedData.data.amount).toLocaleString()}원</p>}
-              {resolvedData.data?.storeName && <p>가게명: {resolvedData.data.storeName}</p>}
-              {resolvedData.data?.hotelName && <p>숙소명: {resolvedData.data.hotelName}</p>}
-              {resolvedData.data?.from && <p>출발: {resolvedData.data.from}</p>}
-              {resolvedData.data?.to && <p>도착: {resolvedData.data.to}</p>}
-              {resolvedData.data?.trainNo && <p>열차: {resolvedData.data.trainNo}</p>}
-              {resolvedData.data?.address && <p>주소: {resolvedData.data.address}</p>}
+              {resolvedData.data?.date && <p>📅 날짜: {resolvedData.data.date}</p>}
+              {resolvedData.data?.amount != null && <p>💰 금액: {Number(resolvedData.data.amount).toLocaleString()}원</p>}
+              {resolvedData.data?.storeName && <p>🏪 가게명: {resolvedData.data.storeName}</p>}
+              {resolvedData.data?.hotelName && <p>🏨 숙소명: {resolvedData.data.hotelName}</p>}
+              {resolvedData.data?.from && <p>📍 출발: {resolvedData.data.from}</p>}
+              {resolvedData.data?.to && <p>📍 도착: {resolvedData.data.to}</p>}
+              {resolvedData.data?.trainNo && <p>🚄 열차: {resolvedData.data.trainNo}</p>}
+              {resolvedData.data?.tollGate && <p>🛣️ 톨게이트: {resolvedData.data.tollGate}</p>}
+              {resolvedData.data?.vehicleType && <p>🚗 차량: {resolvedData.data.vehicleType === "personal_car" ? "자가차량" : "공용차량"}</p>}
+              {resolvedData.data?.address && <p>🏠 주소: {resolvedData.data.address}</p>}
             </div>
+          </div>
+        )}
+
+        {/* 선택지 버튼 */}
+        {currentChoices.length > 0 && !loading && (
+          <div className="mx-4 mb-2 flex flex-wrap gap-2">
+            {currentChoices.map((choice, i) => (
+              <button
+                key={i}
+                onClick={() => submitAnswer(choice.value)}
+                className="px-3 py-2 bg-violet-50 border border-violet-200 rounded-xl text-sm text-violet-700 hover:bg-violet-100 hover:border-violet-300 transition-all font-medium"
+              >
+                {choice.label}
+              </button>
+            ))}
           </div>
         )}
 
@@ -717,12 +809,12 @@ const QAModal = ({ isOpen, onClose, receiptResult, onResolved }) => {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="답변을 입력하세요..."
+              placeholder="직접 입력하여 답변..."
               disabled={loading}
               className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-violet-500 disabled:bg-gray-50"
             />
             <button
-              onClick={sendMessage}
+              onClick={() => submitAnswer(input)}
               disabled={!input.trim() || loading}
               className="px-4 py-2 bg-violet-600 text-white rounded-lg text-sm font-semibold hover:bg-violet-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-all"
             >
@@ -734,14 +826,14 @@ const QAModal = ({ isOpen, onClose, receiptResult, onResolved }) => {
               onClick={handleSkip}
               className="flex-1 py-2 border border-gray-300 rounded-lg text-xs text-gray-600 hover:bg-gray-50 transition-all"
             >
-              건너뛰기 (원본 유지)
+              ⏭️ 건너뛰기 (원본 유지)
             </button>
             {resolvedData && (
               <button
                 onClick={handleApply}
                 className="flex-1 py-2 bg-emerald-600 text-white rounded-lg text-xs font-semibold hover:bg-emerald-700 transition-all"
               >
-                적용하기
+                ✅ 적용하기
               </button>
             )}
           </div>
@@ -1380,12 +1472,12 @@ export default function TravelExpenseV5() {
           }
 
           if (result.type === "toll_receipt" && result.data) {
+            const vehicleType = result.data.vehicleType || "personal_car";
             const existingTollLeg = updated.legs.find((l) => (l.transport === "personal_car" || l.transport === "official_car"));
             if (existingTollLeg) {
-              updated.legs = updated.legs.map((l) => l.id === existingTollLeg.id ? { ...l, tollFee: (l.tollFee || 0) + (result.data.amount || 0) } : l);
+              updated.legs = updated.legs.map((l) => l.id === existingTollLeg.id ? { ...l, tollFee: (l.tollFee || 0) + (result.data.amount || 0), transport: vehicleType } : l);
             } else {
-              // 차량 구간이 없으면 자가차량 구간 생성
-              const carLeg = { ...emptyLeg(), transport: "personal_car", tollFee: result.data.amount || 0 };
+              const carLeg = { ...emptyLeg(), transport: vehicleType, tollFee: result.data.amount || 0 };
               if (updated.legs.length === 1 && !updated.legs[0].to && updated.legs[0].transport === "rail") {
                 updated.legs = [{ ...updated.legs[0], ...carLeg, id: updated.legs[0].id }];
               } else {

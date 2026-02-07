@@ -20,10 +20,6 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "receiptData and userMessage required" });
     }
 
-    // 대화 히스토리 구성
-    const messages = [];
-
-    // 시스템 지시를 첫 번째 user 메시지에 포함
     const systemContext = `당신은 한국 공공기관의 출장 영수증 분석 보조 전문가입니다.
 사용자가 업로드한 영수증의 AI 분석 결과에 대해 대화하고 있습니다.
 
@@ -42,29 +38,35 @@ ${JSON.stringify(receiptData, null, 2)}
 - "resolved": 모든 불확실한 항목이 해결되어 더 이상 질문이 없는 경우. questions는 빈 배열.
 - "follow_up": 아직 확인이 필요한 항목이 있는 경우. questions에 추가 질문 포함.
 - receiptData에는 항상 수정 반영된 최신 데이터를 포함하세요.
-- 금액은 반드시 숫자(정수)로. 날짜는 YYYY-MM-DD 형식으로.`;
+- 금액은 반드시 숫자(정수)로. 날짜는 YYYY-MM-DD 형식으로.
+- 톨게이트 영수증에서 사용자가 "자가차량"이라 답하면 type을 "toll_receipt" 유지하되 data에 "vehicleType": "personal_car" 추가.
+- 사용자가 "공용차량"이라 답하면 data에 "vehicleType": "official_car" 추가.`;
 
-    // 이전 대화 히스토리 추가
+    // 대화 히스토리를 user/assistant 교대로 올바르게 구성
+    const messages = [];
+
+    // 시스템 컨텍스트를 첫 user 메시지로
+    messages.push({ role: "user", content: systemContext });
+
+    // 대화 히스토리 추가 (교대 규칙 보장)
     if (conversationHistory && conversationHistory.length > 0) {
-      // 첫 메시지에 시스템 컨텍스트 포함
-      messages.push({
-        role: "user",
-        content: systemContext + "\n\n" + conversationHistory[0].content,
-      });
-      for (let i = 1; i < conversationHistory.length; i++) {
-        messages.push({
-          role: conversationHistory[i].role,
-          content: conversationHistory[i].content,
-        });
+      for (const msg of conversationHistory) {
+        const lastMsg = messages[messages.length - 1];
+        if (msg.role === lastMsg.role) {
+          // 같은 role 연속 → 이전 메시지에 병합
+          lastMsg.content += "\n\n" + msg.content;
+        } else {
+          messages.push({ role: msg.role, content: msg.content });
+        }
       }
-      // 최신 사용자 메시지
-      messages.push({ role: "user", content: userMessage });
+    }
+
+    // 최신 사용자 메시지 추가 (교대 규칙 보장)
+    const lastMsg = messages[messages.length - 1];
+    if (lastMsg.role === "user") {
+      lastMsg.content += "\n\n사용자 답변: " + userMessage;
     } else {
-      // 첫 대화
-      messages.push({
-        role: "user",
-        content: systemContext + "\n\n사용자 답변: " + userMessage,
-      });
+      messages.push({ role: "user", content: "사용자 답변: " + userMessage });
     }
 
     const response = await fetch("https://api.anthropic.com/v1/messages", {
