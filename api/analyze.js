@@ -18,6 +18,12 @@ export default async function handler(req, res) {
     const { image, mediaType, fileName } = req.body;
     if (!image) return res.status(400).json({ error: "image (base64) required" });
 
+    // PDF vs 이미지 구분
+    const isPdf = (mediaType || "").includes("pdf");
+    const contentBlock = isPdf
+      ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: image } }
+      : { type: "image", source: { type: "base64", media_type: mediaType || "image/jpeg", data: image } };
+
     // Claude API 호출
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -33,14 +39,7 @@ export default async function handler(req, res) {
           {
             role: "user",
             content: [
-              {
-                type: "image",
-                source: {
-                  type: "base64",
-                  media_type: mediaType || "image/jpeg",
-                  data: image,
-                },
-              },
+              contentBlock,
               {
                 type: "text",
                 text: ANALYSIS_PROMPT,
