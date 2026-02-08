@@ -32,6 +32,7 @@ ${JSON.stringify(receiptData, null, 2)}
 
 {
   "status": "resolved" 또는 "follow_up",
+  "message": "사용자에게 보여줄 친절하고 자연스러운 대화형 메시지",
   "receiptData": { ...수정된 영수증 데이터 (type, category, data 포함)... },
   "questions": ["추가 질문이 있으면 여기에"]
 }
@@ -47,7 +48,8 @@ ${JSON.stringify(receiptData, null, 2)}
 - 사용자가 카테고리를 선택하면 expenseCategory를 해당 값으로 업데이트.
 - resolved 시 confidence를 1.0으로 설정.
 - receiptData의 data에 "cardLast4", "approvalLast4" 필드가 있으면 반드시 유지.
-- 사용자가 카드번호나 승인번호를 알려주면 해당 필드를 끝4자리로 업데이트.`;
+- 사용자가 카드번호나 승인번호를 알려주면 해당 필드를 끝4자리로 업데이트.
+- message 필드에는 친절하고 자연스러운 한국어 대화형 메시지를 작성하세요. 현재 상황에 대한 설명, 확인/변경된 사항, 추가로 필요한 정보 등을 자연스럽게 포함해주세요. resolved일 때는 확인/수정 완료 내용을, follow_up일 때는 추가 질문의 맥락과 이유를 충분히 설명해주세요.`;
 
     // 대화 메시지 구성 (user/assistant 교대 보장)
     const messages = [];
