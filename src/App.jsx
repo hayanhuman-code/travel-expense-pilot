@@ -288,7 +288,9 @@ const groupReceiptsIntoTrips = (results) => {
         confidence: r.confidence,
         expenseCategory: r.expenseCategory,
       };
-      trip.attachments.push(att);
+      if (!trip.attachments.some(a => a.fileName === att.fileName)) {
+        trip.attachments.push(att);
+      }
 
       // 철도 영수증 → 구간 자동 추가
       if (r.type === "rail_receipt" && r.data) {
@@ -387,7 +389,23 @@ const BulkUploadModal = ({ isOpen, onClose, onComplete, analyzing, onRequestQA }
 
   const handleFiles = (e) => {
     const newFiles = Array.from(e.target.files);
-    setFiles((prev) => [...prev, ...newFiles]);
+    setFiles((prev) => {
+      const existingNames = new Set(prev.map(f => f.name));
+      const unique = [];
+      const duplicates = [];
+      for (const f of newFiles) {
+        if (existingNames.has(f.name)) {
+          duplicates.push(f.name);
+        } else {
+          existingNames.add(f.name);
+          unique.push(f);
+        }
+      }
+      if (duplicates.length > 0) {
+        alert(`중복 파일이 제외되었습니다: ${duplicates.join(", ")}`);
+      }
+      return [...prev, ...unique];
+    });
     e.target.value = "";
   };
 
@@ -658,15 +676,23 @@ const QAModal = ({ isOpen, onClose, receiptResult, onResolved }) => {
     // AI 질문이 있으면 채팅에 표시
     if (receiptResult.questions?.length > 0) {
       const summary = receiptSummary(receiptResult);
+      // 질문에서 선택지 패턴 감지
+      let detectedChoices = [];
+      if (receiptResult.type === "toll_receipt" ||
+          receiptResult.questions.some(q => q.includes("자가차량") || q.includes("공용차량") || q.includes("자가용"))) {
+        detectedChoices = ["자가용(본인소유)", "공용차량(관용차)"];
+      }
       setChatMessages([{
         role: "assistant",
         content: `📋 분석된 영수증 정보:\n${summary}\n\n❓ 확인이 필요한 항목:\n${receiptResult.questions.map((q, i) => `${i + 1}. ${q}`).join("\n")}`,
+        choices: detectedChoices,
       }]);
     } else {
       const summary = receiptSummary(receiptResult);
       setChatMessages([{
         role: "assistant",
         content: `📋 분석된 영수증 정보:\n${summary}\n\n⚠️ AI가 분류에 확신이 낮습니다. 아래에서 카테고리와 정보를 확인해 주세요.`,
+        choices: [],
       }]);
     }
     setChatInput("");
@@ -726,14 +752,14 @@ const QAModal = ({ isOpen, onClose, receiptResult, onResolved }) => {
         const resolvedMsg = data.message
           ? `${data.message}\n\n"적용하기"를 눌러주세요.`
           : `✅ 확인 완료! 위 정보가 업데이트되었습니다. "적용하기"를 눌러주세요.`;
-        setChatMessages((prev) => [...prev, { role: "assistant", content: resolvedMsg }]);
+        setChatMessages((prev) => [...prev, { role: "assistant", content: resolvedMsg, choices: [] }]);
       } else {
         let followUpMsg = data.message || "";
         if (data.questions?.length > 0) {
           followUpMsg += (followUpMsg ? "\n\n" : "") + data.questions.map((q, i) => `${i + 1}. ${q}`).join("\n");
         }
         if (!followUpMsg) followUpMsg = "추가 정보가 필요합니다.";
-        setChatMessages((prev) => [...prev, { role: "assistant", content: followUpMsg }]);
+        setChatMessages((prev) => [...prev, { role: "assistant", content: followUpMsg, choices: data.choices || [] }]);
       }
     } catch (err) {
       setChatMessages((prev) => [...prev, {
@@ -938,12 +964,24 @@ const QAModal = ({ isOpen, onClose, receiptResult, onResolved }) => {
             <div className="space-y-2 max-h-[150px] overflow-y-auto">
               {chatMessages.map((msg, i) => (
                 <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-                  <div className={`max-w-[85%] rounded-xl px-3 py-2 text-xs whitespace-pre-wrap ${
-                    msg.role === "user"
-                      ? "bg-violet-600 text-white rounded-br-sm"
-                      : "bg-gray-100 text-gray-700 rounded-bl-sm"
-                  }`}>
-                    {msg.content}
+                  <div className="max-w-[85%]">
+                    <div className={`rounded-xl px-3 py-2 text-xs whitespace-pre-wrap ${
+                      msg.role === "user"
+                        ? "bg-violet-600 text-white rounded-br-sm"
+                        : "bg-gray-100 text-gray-700 rounded-bl-sm"
+                    }`}>
+                      {msg.content}
+                    </div>
+                    {msg.role === "assistant" && msg.choices?.length > 0 && i === chatMessages.length - 1 && (
+                      <div className="flex flex-wrap gap-1.5 mt-2">
+                        {msg.choices.map((choice, ci) => (
+                          <button key={ci} onClick={() => submitChat(choice)} disabled={chatLoading}
+                            className="px-3 py-1.5 bg-white border-2 border-violet-300 text-violet-700 rounded-lg text-xs font-medium hover:bg-violet-50 hover:border-violet-500 disabled:opacity-50 transition-all">
+                            {choice}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}

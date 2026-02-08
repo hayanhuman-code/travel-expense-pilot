@@ -33,6 +33,7 @@ ${JSON.stringify(receiptData, null, 2)}
 {
   "status": "resolved" 또는 "follow_up",
   "message": "사용자에게 보여줄 친절하고 자연스러운 대화형 메시지",
+  "choices": ["선택지1", "선택지2"],
   "receiptData": { ...수정된 영수증 데이터 (type, category, data 포함)... },
   "questions": ["추가 질문이 있으면 여기에"]
 }
@@ -49,7 +50,11 @@ ${JSON.stringify(receiptData, null, 2)}
 - resolved 시 confidence를 1.0으로 설정.
 - receiptData의 data에 "cardLast4", "approvalLast4" 필드가 있으면 반드시 유지.
 - 사용자가 카드번호나 승인번호를 알려주면 해당 필드를 끝4자리로 업데이트.
-- message 필드에는 친절하고 자연스러운 한국어 대화형 메시지를 작성하세요. 현재 상황에 대한 설명, 확인/변경된 사항, 추가로 필요한 정보 등을 자연스럽게 포함해주세요. resolved일 때는 확인/수정 완료 내용을, follow_up일 때는 추가 질문의 맥락과 이유를 충분히 설명해주세요.`;
+- message 필드에는 친절하고 자연스러운 한국어 대화형 메시지를 작성하세요. 현재 상황에 대한 설명, 확인/변경된 사항, 추가로 필요한 정보 등을 자연스럽게 포함해주세요. resolved일 때는 확인/수정 완료 내용을, follow_up일 때는 추가 질문의 맥락과 이유를 충분히 설명해주세요.
+- choices: follow_up일 때 사용자에게 선택지를 제공하려면 choices 배열에 포함. 선택지가 없는 자유 입력 질문이면 빈 배열 []. resolved일 때도 빈 배열 [].
+- 톨게이트 영수증 차량 유형 질문 시 반드시 choices: ["자가용(본인소유)", "공용차량(관용차)"]를 포함.
+- 불확실한 유형 질문 시 해당 유형 선택지를 choices에 포함. 예: 숙박/식당 구분 → choices: ["숙박영수증", "식당영수증"]
+- 비용 카테고리 질문 시 choices: ["교통비", "숙박비", "현지인증"]를 포함.`;
 
     // 대화 메시지 구성 (user/assistant 교대 보장)
     const messages = [];
@@ -92,28 +97,17 @@ ${JSON.stringify(receiptData, null, 2)}
       "x-api-key": apiKey,
       "anthropic-version": "2023-06-01",
     };
-    const apiBody = { max_tokens: 1024, system, messages };
+    const apiBody = { max_tokens: 2048, system, messages };
 
-    // 1차: Haiku (빠르고 저렴)
-    let response = await fetch("https://api.anthropic.com/v1/messages", {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: apiHeaders,
-      body: JSON.stringify({ ...apiBody, model: "claude-haiku-4-5-20251001" }),
+      body: JSON.stringify({ ...apiBody, model: "claude-sonnet-4-5-20250929" }),
     });
-
-    // Haiku 실패 시 Sonnet fallback
-    if (!response.ok) {
-      console.log("Haiku failed, falling back to Sonnet. Status:", response.status);
-      response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: apiHeaders,
-        body: JSON.stringify({ ...apiBody, model: "claude-sonnet-4-5-20250929" }),
-      });
-    }
 
     if (!response.ok) {
       const errText = await response.text();
-      console.error("Claude API error (both models failed):", response.status, errText);
+      console.error("Claude API error:", response.status, errText);
       return res.status(502).json({ error: `Claude API error: ${response.status}`, detail: errText });
     }
 
