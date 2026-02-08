@@ -7,7 +7,7 @@ import { useState, useRef, useMemo, useCallback } from "react";
 
 // ── 상수 ──
 const MEAL_ALLOWANCE = 25000;
-const MEAL_DEDUCTION = 8333;
+const MEAL_DEDUCTION = Math.floor(25000 / 3 / 10) * 10; // 8330원 (1/3 감액, 10원 단위 절사)
 const DAILY_ALLOWANCE = 25000;
 const DAILY_ALLOWANCE_HALF = 12500;
 const FUEL_RATE = 1680; // 원/km
@@ -305,6 +305,9 @@ const groupReceiptsIntoTrips = (results) => {
         if (to && !["서울", "행신", "용산", "수서", "청량리"].includes(to)) {
           inferredDestination = mapDestinationName(to);
         }
+        // 카드번호/승인번호 자동 매핑
+        if (d.cardLast4) trip.fareCardLast4 = d.cardLast4;
+        if (d.approvalLast4) trip.fareApprovalLast4 = d.approvalLast4;
       }
 
       // 숙박 영수증
@@ -317,6 +320,9 @@ const groupReceiptsIntoTrips = (results) => {
           if (metro) trip.lodgingRegion = getLodgingRegion(metro);
           if (!inferredDestination) inferredDestination = d.address;
         }
+        // 카드번호/승인번호 자동 매핑
+        if (d.cardLast4) trip.lodgingCardLast4 = d.cardLast4;
+        if (d.approvalLast4) trip.lodgingApprovalLast4 = d.approvalLast4;
       }
 
       // 현지영수증에서 출장지 추론
@@ -340,6 +346,9 @@ const groupReceiptsIntoTrips = (results) => {
             tollFee: r.data.amount || 0,
           });
         }
+        // 카드번호/승인번호 자동 매핑
+        if (r.data.cardLast4) trip.fareCardLast4 = r.data.cardLast4;
+        if (r.data.approvalLast4) trip.fareApprovalLast4 = r.data.approvalLast4;
       }
     });
 
@@ -1388,7 +1397,7 @@ const SettlementTable = ({ trips, userName, userGrade }) => {
 
     const fare = t.legs.reduce((s, l) => s + legFare(l), 0);
     const mc = t.noMeal ? 3 : [t.breakfast, t.lunch, t.dinner].filter(Boolean).length;
-    const meal = t.noMeal ? 0 : Math.max(0, Math.floor(MEAL_ALLOWANCE - MEAL_DEDUCTION * mc));
+    const meal = t.noMeal ? 0 : Math.max(0, Math.floor((MEAL_ALLOWANCE - MEAL_DEDUCTION * mc) / 10) * 10);
     const hasOffCar = t.legs.some((l) => l.transport === "official_car");
     const daily = hasOffCar ? DAILY_ALLOWANCE_HALF : DAILY_ALLOWANCE;
 
@@ -1683,6 +1692,9 @@ export default function TravelExpenseV5() {
             } else {
               updated.legs = [...updated.legs, newLeg];
             }
+            // 카드번호/승인번호 자동 매핑
+            if (d.cardLast4) updated.fareCardLast4 = d.cardLast4;
+            if (d.approvalLast4) updated.fareApprovalLast4 = d.approvalLast4;
           }
 
           if (result.type === "lodging_receipt" && result.data) {
@@ -1693,6 +1705,9 @@ export default function TravelExpenseV5() {
               const metro = detectMetro(d.address);
               if (metro) updated.lodgingRegion = getLodgingRegion(metro);
             }
+            // 카드번호/승인번호 자동 매핑
+            if (d.cardLast4) updated.lodgingCardLast4 = d.cardLast4;
+            if (d.approvalLast4) updated.lodgingApprovalLast4 = d.approvalLast4;
           }
 
           if (result.type === "toll_receipt" && result.data) {
@@ -1708,6 +1723,9 @@ export default function TravelExpenseV5() {
                 updated.legs = [...updated.legs, carLeg];
               }
             }
+            // 카드번호/승인번호 자동 매핑
+            if (result.data.cardLast4) updated.fareCardLast4 = result.data.cardLast4;
+            if (result.data.approvalLast4) updated.fareApprovalLast4 = result.data.approvalLast4;
           }
 
           if (result.type === "map_capture" && result.data) {

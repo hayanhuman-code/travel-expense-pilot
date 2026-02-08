@@ -45,7 +45,9 @@ ${JSON.stringify(receiptData, null, 2)}
 - 사용자가 "공용차량" → data에 "vehicleType": "official_car" 추가.
 - receiptData에 "confidence" (0~1)와 "expenseCategory" ("교통비"/"숙박비"/"현지인증") 필드를 포함.
 - 사용자가 카테고리를 선택하면 expenseCategory를 해당 값으로 업데이트.
-- resolved 시 confidence를 1.0으로 설정.`;
+- resolved 시 confidence를 1.0으로 설정.
+- receiptData의 data에 "cardLast4", "approvalLast4" 필드가 있으면 반드시 유지.
+- 사용자가 카드번호나 승인번호를 알려주면 해당 필드를 끝4자리로 업데이트.`;
 
     // 대화 메시지 구성 (user/assistant 교대 보장)
     const messages = [];
