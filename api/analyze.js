@@ -34,7 +34,7 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: "claude-sonnet-4-5-20250929",
-        max_tokens: 4096,
+        max_tokens: 8192,
         messages: [
           {
             role: "user",
@@ -96,6 +96,15 @@ export default async function handler(req, res) {
       }
     }
 
+    // 5차: 잘린 JSON 배열 복구 (max_tokens 초과 시)
+    if (!parsed) {
+      const recovered = recoverTruncatedArray(text);
+      if (recovered) {
+        parsed = recovered;
+        console.warn("⚠️ 잘린 JSON 복구 성공:", parsed.length, "건");
+      }
+    }
+
     if (!parsed) {
       console.error("JSON parse failed. Raw text:", text);
       return res.status(500).json({ error: "Claude 응답을 파싱할 수 없습니다", raw: text.slice(0, 500) });
@@ -133,6 +142,14 @@ const ANALYSIS_PROMPT = `당신은 한국 공공기관의 출장 영수증 분�
 업로드된 문서/이미지를 분석하여 아래 형식으로 JSON 배열을 반환하세요.
 영수증이 1개라도 반드시 배열([...])로 감싸세요. 여러 영수증이면 배열에 모두 포함하세요.
 반드시 JSON만 출력하세요. 설명이나 마크다운 없이 순수 JSON만 출력하세요.
+
+★★★ 다건 처리 (최우선 규칙) ★★★
+1건의 PDF/이미지에 여러 건의 영수증/내역이 포함되어 있으면, 절대 요약하거나 합산하지 말고 각 건을 개별 JSON 객체로 분리하여 배열에 모두 포함하세요.
+- 하이패스 명세서/통행내역서: 표에 있는 각 행(각 톨게이트 통과 내역)을 개별 toll_receipt으로 분리. 8건이면 8개, 20건이면 20개의 toll_receipt을 배열에 포함.
+- 철도 왕복 예매: 가는편/오는편을 각각 별도 rail_receipt으로 분리.
+- 숙박 여러 건: 각 숙박을 개별 lodging_receipt으로 분리.
+- 혼합 스캔: 여러 종류 영수증이 섞여 있으면 각각 해당 유형으로 분리.
+누락 없이 문서에 보이는 모든 내역을 빠짐없이 개별 항목으로 출력하세요.
 
 ■ 유형 분류 핵심 규칙 (반드시 준수!)
 - 철도(rail_receipt): 반드시 KTX, SRT, ITX, 무궁화 등 열차 승차권/예매내역만 해당. "역"이라는 글자가 있어도 톨게이트/고속도로 영수증이면 rail이 아님!
@@ -218,19 +235,10 @@ const ANALYSIS_PROMPT = `당신은 한국 공공기관의 출장 영수증 분�
   "data": {}
 }
 
-■ 하이패스 명세서 / 통행내역서 (다건 처리)
-1건의 PDF/이미지에 여러 톨게이트 통과 내역이 있을 수 있습니다.
-각 톨게이트(구간)를 개별 toll_receipt으로 분리하여 배열에 포함하세요.
-각 항목의 date, tollGate, amount, cardLast4, approvalLast4를 정확히 분리하세요.
-
-■ 철도 왕복 예매 내역 (다건 처리)
-한 이미지에 가는편과 오는편이 모두 보이면 각각 별도의 rail_receipt으로 분리하세요.
-출발역/도착역이 반대인 2개의 rail_receipt을 배열에 포함하세요.
-각 열차의 cardLast4, approvalLast4도 각각 추출하세요.
-
-■ 여러 종류 영수증이 하나의 파일에 있는 경우 (혼합 스캔)
-1장의 스캔/사진에 여러 종류의 영수증이 포함되어 있으면 각각 개별 항목으로 분리하여 배열에 포함하세요.
-예: KTX 승차권 + 톨게이트 영수증 = [rail_receipt, toll_receipt]
+■ 다건 처리 보충 (위의 ★★★ 규칙 참고)
+- 하이패스 명세서: 표의 각 행 = 개별 toll_receipt. 날짜·톨게이트명·금액을 각각 정확히 분리.
+- 철도 왕복: 가는편/오는편 = 2개의 rail_receipt. 각각의 cardLast4, approvalLast4 추출.
+- 혼합 스캔: KTX + 톨게이트 = [rail_receipt, toll_receipt]으로 분리.
 
 ■ 숙박 예약 확인서 (야놀자, 여기어때, Booking.com, 아고다 등)
 숙박 예약 앱/사이트의 예약확인서도 lodging_receipt으로 분류하세요.
@@ -277,6 +285,40 @@ questions는 한국어 문자열 배열이며, 여비정산 내역표에 필요�
 5. 금액이 불분명한 경우
 
 예: "confidence": 0.6, "questions": ["자가차량(본인 소유)으로 이동하셨나요, 공용차량(관용차)으로 이동하셨나요?"]`;
+
+// ── 잘린 JSON 배열 복구 ──
+// max_tokens 초과로 응답이 잘린 경우, 완전한 객체만 추출
+function recoverTruncatedArray(text) {
+  // 텍스트에서 [ 로 시작하는 부분 찾기
+  const startIdx = text.indexOf("[");
+  if (startIdx === -1) return null;
+
+  const content = text.slice(startIdx);
+  const items = [];
+  let depth = 0;
+  let objStart = -1;
+
+  for (let i = 1; i < content.length; i++) {
+    const ch = content[i];
+    if (ch === "{" && depth === 0) {
+      objStart = i;
+      depth = 1;
+    } else if (ch === "{") {
+      depth++;
+    } else if (ch === "}") {
+      depth--;
+      if (depth === 0 && objStart !== -1) {
+        const objStr = content.slice(objStart, i + 1);
+        try {
+          items.push(JSON.parse(objStr));
+        } catch (e) { /* 파싱 불가한 객체는 건너뜀 */ }
+        objStart = -1;
+      }
+    }
+  }
+
+  return items.length > 0 ? items : null;
+}
 
 // ── 광역지자체 매핑 ──
 const METRO_MAP = {
