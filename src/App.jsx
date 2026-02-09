@@ -523,7 +523,7 @@ const BulkUploadModal = ({ isOpen, onClose, onComplete, analyzing, onRequestQA }
                 <p className="text-xs font-semibold text-emerald-700">
                   ✅ {results.length}개 영수증 분석 완료 → {previewTrips.length}건의 출장이 생성됩니다
                 </p>
-                <p className="text-xs text-emerald-600 mt-0.5">일비·식비는 "해당없음"으로 설정됩니다. 생성 후 직접 수정해 주세요.</p>
+                <p className="text-xs text-emerald-600 mt-0.5">일비는 "해당없음", 식비는 "식사 미제공"(전액 지급)으로 설정됩니다. 필요시 수정해 주세요.</p>
               </div>
 
               {previewTrips.map((trip, i) => (
@@ -1187,7 +1187,7 @@ const TripCard = ({ trip, index, onUpdate, onRemove, canRemove, isExecutive, ana
               🤖 자동으로 생성된 출장입니다
             </p>
             <p className="text-xs text-violet-600 mt-0.5">
-              일비·식비는 "해당없음"으로 설정되었습니다. 필요시 수정해 주세요.
+              일비는 "해당없음", 식비는 "식사 미제공"(전액 지급)으로 설정되었습니다. 필요시 수정해 주세요.
             </p>
           </div>
         )}
@@ -1287,8 +1287,8 @@ const TripCard = ({ trip, index, onUpdate, onRemove, canRemove, isExecutive, ana
               <span className="text-xs font-semibold text-gray-600 mb-1 block">🍽️ 식비 (기본 {MEAL_ALLOWANCE.toLocaleString()}원, 제공 식사 시 차감)</span>
               <div className="flex gap-1.5">
                 <button onClick={() => { u("noMeal", true); u("breakfast", false); u("lunch", false); u("dinner", false); }}
-                  className={`flex-1 py-1.5 rounded text-xs border transition-all ${trip.noMeal ? "bg-red-500 text-white border-red-500" : "bg-white text-gray-500 border-gray-200"}`}>
-                  🚫 해당없음
+                  className={`flex-1 py-1.5 rounded text-xs border transition-all ${trip.noMeal ? "bg-green-600 text-white border-green-600" : "bg-white text-gray-500 border-gray-200"}`}>
+                  ✅ 식사 미제공
                 </button>
                 {[["breakfast", "🌅 조식"], ["lunch", "☀️ 중식"], ["dinner", "🌙 석식"]].map(([key, label]) => (
                   <button key={key} onClick={() => { u("noMeal", false); u(key, !trip[key]); }}
@@ -1297,7 +1297,11 @@ const TripCard = ({ trip, index, onUpdate, onRemove, canRemove, isExecutive, ana
                   </button>
                 ))}
               </div>
-              {!trip.noMeal && (
+              {trip.noMeal ? (
+                <div className="text-xs text-green-600 mt-1.5">
+                  제공 식사 없음 → 식비 {MEAL_ALLOWANCE.toLocaleString()}원 전액 지급
+                </div>
+              ) : (
                 <div className="text-xs text-gray-400 mt-1.5">
                   기본 {MEAL_ALLOWANCE.toLocaleString()}원 지급, 제공 식사 1끼당 {MEAL_DEDUCTION.toLocaleString()}원 차감
                 </div>
@@ -1425,7 +1429,7 @@ const SettlementTable = ({ trips, userName, userGrade }) => {
 
       // 관외출장: leg별 1행
       const mc = t.noMeal ? 0 : [t.breakfast, t.lunch, t.dinner].filter(Boolean).length;
-      const meal = t.noMeal ? 0 : Math.max(0, Math.floor((MEAL_ALLOWANCE - MEAL_DEDUCTION * mc) / 10) * 10);
+      const meal = Math.max(0, Math.floor((MEAL_ALLOWANCE - MEAL_DEDUCTION * mc) / 10) * 10);
       const hasOffCar = t.legs.some((l) => l.transport === "official_car");
       const daily = t.noDaily ? 0 : (hasOffCar ? DAILY_ALLOWANCE_HALF : DAILY_ALLOWANCE);
 
