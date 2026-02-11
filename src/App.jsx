@@ -1051,11 +1051,17 @@ const LegCard = ({ leg, index, total, onUpdate, onRemove, canRemove, isExecutive
       </div>
 
       {leg.transport === "rail" && (
-        <div className="grid grid-cols-2 gap-2">
-          <input value={leg.trainNo} onChange={(e) => u("trainNo", e.target.value)} placeholder="열차번호 (예: KTX 301)" className="px-2 py-1.5 border border-gray-300 rounded text-xs" />
-          <input type="number" value={leg.amount || ""} onChange={(e) => u("amount", Number(e.target.value))} placeholder="운임 (원)" className="px-2 py-1.5 border border-gray-300 rounded text-xs font-mono" />
+        <div className="space-y-2">
+          <div className="grid grid-cols-2 gap-2">
+            <input value={leg.trainNo} onChange={(e) => u("trainNo", e.target.value)} placeholder="열차번호 (예: KTX 301)" className="px-2 py-1.5 border border-gray-300 rounded text-xs" />
+            <input type="number" value={leg.amount || ""} onChange={(e) => u("amount", Number(e.target.value))} placeholder="운임 (원)" className="px-2 py-1.5 border border-gray-300 rounded text-xs font-mono" />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <input value={leg.cardLast4 || ""} onChange={(e) => u("cardLast4", e.target.value)} placeholder="카드번호 끝4자리" maxLength={4} className="px-2 py-1.5 border border-gray-300 rounded text-xs font-mono" />
+            <input value={leg.approvalLast4 || ""} onChange={(e) => u("approvalLast4", e.target.value)} placeholder="승인번호 끝4자리" maxLength={4} className="px-2 py-1.5 border border-gray-300 rounded text-xs font-mono" />
+          </div>
           {isExecutive && (
-            <div className="col-span-2 text-xs text-amber-600 bg-amber-50 px-2 py-1 rounded">👔 임원: KTX 특실 이용 가능</div>
+            <div className="text-xs text-amber-600 bg-amber-50 px-2 py-1 rounded">👔 임원: KTX 특실 이용 가능</div>
           )}
         </div>
       )}
@@ -1455,8 +1461,8 @@ const SettlementTable = ({ trips, userName, userGrade }) => {
         else if (leg.transport === "personal_car") transportLabel = `자가용(${leg.km || 0}km)`;
         else transportLabel = TRANSPORT_TYPES.find((x) => x.value === leg.transport)?.label || leg.transport;
 
-        // 경로
-        const legRoute = (leg.from && leg.to) ? `${leg.from}→${leg.to}` : leg.to || destinationOnly;
+        // 경로: 출장지 값 사용
+        const legRoute = destinationOnly;
 
         // 카드정보: KTX(철도) 영수증만 표시
         const effCard = leg.transport === "rail" ? (leg.cardLast4 || "") : "";
