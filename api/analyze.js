@@ -34,7 +34,7 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: "claude-sonnet-4-5-20250929",
-        max_tokens: 4096,
+        max_tokens: 8192,
         messages: [
           {
             role: "user",
@@ -96,6 +96,15 @@ export default async function handler(req, res) {
       }
     }
 
+    // 5차: 잘린 JSON 배열 복구 (max_tokens 초과 시)
+    if (!parsed) {
+      const recovered = recoverTruncatedArray(text);
+      if (recovered) {
+        parsed = recovered;
+        console.warn("⚠️ 잘린 JSON 복구 성공:", parsed.length, "건");
+      }
+    }
+
     if (!parsed) {
       console.error("JSON parse failed. Raw text:", text);
       return res.status(500).json({ error: "Claude 응답을 파싱할 수 없습니다", raw: text.slice(0, 500) });
@@ -134,11 +143,48 @@ const ANALYSIS_PROMPT = `당신은 한국 공공기관의 출장 영수증 분�
 영수증이 1개라도 반드시 배열([...])로 감싸세요. 여러 영수증이면 배열에 모두 포함하세요.
 반드시 JSON만 출력하세요. 설명이나 마크다운 없이 순수 JSON만 출력하세요.
 
+★★★ 다건 처리 (최우선 규칙) ★★★
+1건의 PDF/이미지에 여러 건의 영수증/내역이 포함되어 있으면, 절대 요약하거나 합산하지 말고 각 건을 개별 JSON 객체로 분리하여 배열에 모두 포함하세요.
+- 하이패스 명세서/통행내역서: 표에 있는 각 행(각 톨게이트 통과 내역)을 개별 toll_receipt으로 분리. 8건이면 8개, 20건이면 20개의 toll_receipt을 배열에 포함.
+- 철도 왕복 예매: 가는편/오는편을 각각 별도 rail_receipt으로 분리.
+- 숙박 여러 건: 각 숙박을 개별 lodging_receipt으로 분리.
+- 혼합 스캔: 여러 종류 영수증이 섞여 있으면 각각 해당 유형으로 분리.
+누락 없이 문서에 보이는 모든 내역을 빠짐없이 개별 항목으로 출력하세요.
+
 ■ 유형 분류 핵심 규칙 (반드시 준수!)
 - 철도(rail_receipt): 반드시 KTX, SRT, ITX, 무궁화 등 열차 승차권/예매내역만 해당. "역"이라는 글자가 있어도 톨게이트/고속도로 영수증이면 rail이 아님!
 - 톨게이트(toll_receipt): 하이패스, 톨게이트, IC, 고속도로 통행료 영수증. "IC", "톨게이트", "하이패스", "통행료" 키워드가 있으면 반드시 toll_receipt.
 - 숙박(lodging_receipt): 호텔, 모텔, 펜션, 게스트하우스, 숙소, 리조트, 에어비앤비 등 숙박업소 영수증. "호텔", "모텔", "펜션", "숙박", "HOTEL", "MOTEL", "INN", "객실", "투숙" 키워드 → 반드시 lodging_receipt. 절대 local_receipt로 분류하지 마세요!
 - 현지(local_receipt): 편의점, 식당, 카페, 마트 등 일반 매장 영수증만 해당. 숙박업소 영수증을 현지영수증으로 분류하면 안 됩니다.
+
+■ 금액 기반 분류 보조 규칙 (실무 휴리스틱)
+금액을 보고 유형을 재검증하세요:
+- 금액이 30,000원 이상 → 숙박 영수증일 가능성이 매우 높음. "호텔", "모텔", "펜션" 등의 키워드가 조금이라도 보이면 반드시 lodging_receipt으로 분류
+- 금액이 5,000원 미만 → 현지 영수증(편의점, 카페 등)일 가능성이 높음. 단, "숙박", "호텔" 키워드가 있으면 금액과 무관하게 lodging_receipt
+- 금액이 5,000원~30,000원 사이 → 키워드와 맥락을 종합적으로 판단
+예시:
+- "IBK 비비카드 / 가맹점: 호텔아이콘 / 70,000원" → 금액 70,000원 + "호텔" 키워드 = 100% lodging_receipt
+- "GS25 세종점 / 3,500원" → 금액 3,500원 + 편의점명 = local_receipt
+- "○○식당 / 45,000원" → 금액 45,000원이지만 "식당" 키워드 = local_receipt (식사 영수증)
+
+■ 숙박 영수증 특별 주의사항 (절대 실수하지 마세요!)
+- IBK 비비카드, 나이스페이먼츠, KG이니시스 등 PG사 결제 영수증이라도 → 가맹점명/업체명에 "호텔", "모텔", "펜션", "리조트", "게스트하우스" 등이 포함되면 반드시 lodging_receipt
+- 야놀자, 여기어때, Booking.com, Agoda, Airbnb 등 숙박 예약 플랫폼의 예약 확인서 → lodging_receipt
+- "객실", "체크인", "체크아웃", "투숙", "1박" 등의 단어가 있으면 → lodging_receipt
+- 금액이 30,000원 이상이고 가맹점명에 숙박 관련 힌트가 조금이라도 있으면 → lodging_receipt
+
+■ 주소 추출 규칙 (시/군/구 단위로 간소화)
+- "전라북도 군산시 ○○동 123번지" → address: "군산시"
+- "호텔아이콘 (전북 군산시)" → address: "군산시"
+- "서울특별시 강남구 역삼동" → address: "서울시"
+- "충북 청주시 흥덕구 오송읍" → address: "오송" (오송은 특별 처리)
+- "세종특별자치시 어진동" → address: "세종시"
+- "경기도 수원시" → address: "수원시"
+- "부산광역시" → address: "부산시"
+- 주소를 확인할 수 없으면 빈 문자열("")
+주소 추출 방법:
+1. "주소:", "사업장 소재지:", "가맹점 주소:" 라벨 옆 텍스트
+2. 가맹점명 근처에 표시된 지역명
 
 ■ 철도 영수증 (KTX, SRT, ITX, 무궁화 등 열차 승차권만)
 {
@@ -150,7 +196,7 @@ const ANALYSIS_PROMPT = `당신은 한국 공공기관의 출장 영수증 분�
     "to": "도착역",
     "trainNo": "열차번호 (예: KTX 301)",
     "seatClass": "일반실 또는 특실",
-    "amount": 금액(숫자),
+    "amount": 실제 카드/현금 결제 금액(숫자). 포인트·마일리지 결제분 제외,
     "cardLast4": "결제 카드번호 끝4자리 또는 빈문자열",
     "approvalLast4": "승인번호 끝4자리 또는 빈문자열"
   }
@@ -163,10 +209,9 @@ const ANALYSIS_PROMPT = `당신은 한국 공공기관의 출장 영수증 분�
   "data": {
     "hotelName": "호텔/숙소명",
     "date": "YYYY-MM-DD 또는 빈문자열",
-    "amount": 금액(숫자),
-    "address": "전체 주소",
-    "cardLast4": "결제 카드번호 끝4자리 또는 빈문자열",
-    "approvalLast4": "승인번호 끝4자리 또는 빈문자열"
+    "amount": 실제 카드/현금 결제 금액(숫자). 포인트·마일리지 결제분 제외,
+    "address": "시/군/구 단위 주소 (예: 군산시, 서울시, 오송)",
+    "cardLast4": "결제 카드번호 끝4자리 또는 빈문자열"
   }
 }
 
@@ -176,10 +221,9 @@ const ANALYSIS_PROMPT = `당신은 한국 공공기관의 출장 영수증 분�
   "category": "톨게이트영수증",
   "data": {
     "tollGate": "톨게이트명",
-    "amount": 금액(숫자),
+    "amount": 실제 카드/현금 결제 금액(숫자). 포인트·마일리지 결제분 제외,
     "date": "YYYY-MM-DD 또는 빈문자열",
-    "cardLast4": "결제 카드번호 끝4자리 또는 빈문자열",
-    "approvalLast4": "승인번호 끝4자리 또는 빈문자열"
+    "cardLast4": "결제 카드번호 끝4자리 또는 빈문자열"
   }
 }
 
@@ -189,11 +233,10 @@ const ANALYSIS_PROMPT = `당신은 한국 공공기관의 출장 영수증 분�
   "category": "현지영수증",
   "data": {
     "storeName": "가게명",
-    "amount": 금액(숫자),
+    "amount": 실제 카드/현금 결제 금액(숫자). 포인트·마일리지 결제분 제외,
     "date": "YYYY-MM-DD 또는 빈문자열",
-    "address": "전체 주소 (영수증에 있는 경우)",
-    "cardLast4": "결제 카드번호 끝4자리 또는 빈문자열",
-    "approvalLast4": "승인번호 끝4자리 또는 빈문자열"
+    "address": "시/군/구 단위 주소 (예: 군산시, 서울시, 오송)",
+    "cardLast4": "결제 카드번호 끝4자리 또는 빈문자열"
   }
 }
 
@@ -218,38 +261,34 @@ const ANALYSIS_PROMPT = `당신은 한국 공공기관의 출장 영수증 분�
   "data": {}
 }
 
-■ 하이패스 명세서 / 통행내역서 (다건 처리)
-1건의 PDF/이미지에 여러 톨게이트 통과 내역이 있을 수 있습니다.
-각 톨게이트(구간)를 개별 toll_receipt으로 분리하여 배열에 포함하세요.
-각 항목의 date, tollGate, amount, cardLast4, approvalLast4를 정확히 분리하세요.
-
-■ 철도 왕복 예매 내역 (다건 처리)
-한 이미지에 가는편과 오는편이 모두 보이면 각각 별도의 rail_receipt으로 분리하세요.
-출발역/도착역이 반대인 2개의 rail_receipt을 배열에 포함하세요.
-각 열차의 cardLast4, approvalLast4도 각각 추출하세요.
-
-■ 여러 종류 영수증이 하나의 파일에 있는 경우 (혼합 스캔)
-1장의 스캔/사진에 여러 종류의 영수증이 포함되어 있으면 각각 개별 항목으로 분리하여 배열에 포함하세요.
-예: KTX 승차권 + 톨게이트 영수증 = [rail_receipt, toll_receipt]
-
-■ 숙박 예약 확인서 (야놀자, 여기어때, Booking.com, 아고다 등)
-숙박 예약 앱/사이트의 예약확인서도 lodging_receipt으로 분류하세요.
-호텔명, 체크인 날짜, 금액, 주소를 추출하세요.
+■ 다건 처리 보충 (위의 ★★★ 규칙 참고)
+- 하이패스 명세서: 표의 각 행 = 개별 toll_receipt. 날짜·톨게이트명·금액을 각각 정확히 분리.
+- 철도 왕복: 가는편/오는편 = 2개의 rail_receipt. 각각의 cardLast4, approvalLast4 추출.
+- 혼합 스캔: KTX + 톨게이트 = [rail_receipt, toll_receipt]으로 분리.
 
 금액은 반드시 숫자(정수)로 반환하세요. 쉼표나 "원" 없이 숫자만.
+★★ 결제 수단이 여러 개인 경우 (포인트+카드, 마일리지+현금, 쿠폰+카드 등):
+  - amount에는 실제 카드/현금 결제 금액만 포함하세요.
+  - 포인트·마일리지·쿠폰·적립금 결제분은 반드시 제외합니다.
+  - 예) "포인트 결제 1,600원, 신용카드 결제 18,500원" → amount: 18500
+  - 예) "마일리지 5,000원, 카드 결제 40,000원" → amount: 40000
 날짜를 확인할 수 없으면 빈 문자열("")로.
 주소를 확인할 수 없으면 빈 문자열("")로.
 가게명(storeName)은 "상호", "가맹점", "가맹점명" 옆에 표시된 이름을 사용하세요. 주소 근처에 있는 경우도 많습니다.
 
-■ 카드번호·승인번호 인식 (모든 유형에 해당, data 안에 포함)
+■ 카드번호 인식 (모든 유형에 해당, data 안에 포함)
 영수증에 결제 카드번호가 표시된 경우 끝 4자리만 "cardLast4"에 입력하세요.
-승인번호가 표시된 경우 끝 4자리만 "approvalLast4"에 입력하세요.
 확인할 수 없으면 빈 문자열("").
 - 카드번호 마스킹 변형: "****-****-****-1234", "카드(끝번호)1234", "카드번호 **** 1234", "VISA ****1234", "BC ****1234" → 끝 4자리 추출
-- 승인번호 변형: "승인번호: 12345678", "승인No.12345678", "APPROVAL 12345678", "승인 12345678" → 끝 4자리 추출
 - 숫자 4자리만 입력 (예: "1234"). 하이픈이나 공백 없이.
-- 결제금액 vs 승인금액: 결제금액, 승인금액, 이용금액이 모두 있으면 "결제금액"을 우선 사용.
-- 날짜 추출: "이용일시", "거래일시", "결제일시", "승인일시" 등에서 날짜(YYYY-MM-DD)만 추출.
+
+■ 승인번호 인식 (철도 영수증만 해당!)
+철도 영수증(rail_receipt)에만 "approvalLast4" 필드를 포함하세요.
+다른 유형(숙박, 톨게이트, 현지)에는 승인번호를 추출하지 마세요.
+- 승인번호 변형: "승인번호: 12345678", "승인No.12345678" → 끝 4자리 추출
+- 확인할 수 없으면 빈 문자열("").
+
+날짜 추출: "이용일시", "거래일시", "결제일시", "승인일시" 등에서 날짜(YYYY-MM-DD)만 추출.
 
 ■ 신뢰도 (confidence) — 모든 영수증 객체에 반드시 포함!
 "confidence" 필드를 0.0~1.0 사이의 소수로 반드시 포함하세요.
@@ -277,6 +316,40 @@ questions는 한국어 문자열 배열이며, 여비정산 내역표에 필요�
 5. 금액이 불분명한 경우
 
 예: "confidence": 0.6, "questions": ["자가차량(본인 소유)으로 이동하셨나요, 공용차량(관용차)으로 이동하셨나요?"]`;
+
+// ── 잘린 JSON 배열 복구 ──
+// max_tokens 초과로 응답이 잘린 경우, 완전한 객체만 추출
+function recoverTruncatedArray(text) {
+  // 텍스트에서 [ 로 시작하는 부분 찾기
+  const startIdx = text.indexOf("[");
+  if (startIdx === -1) return null;
+
+  const content = text.slice(startIdx);
+  const items = [];
+  let depth = 0;
+  let objStart = -1;
+
+  for (let i = 1; i < content.length; i++) {
+    const ch = content[i];
+    if (ch === "{" && depth === 0) {
+      objStart = i;
+      depth = 1;
+    } else if (ch === "{") {
+      depth++;
+    } else if (ch === "}") {
+      depth--;
+      if (depth === 0 && objStart !== -1) {
+        const objStr = content.slice(objStart, i + 1);
+        try {
+          items.push(JSON.parse(objStr));
+        } catch (e) { /* 파싱 불가한 객체는 건너뜀 */ }
+        objStart = -1;
+      }
+    }
+  }
+
+  return items.length > 0 ? items : null;
+}
 
 // ── 광역지자체 매핑 ──
 const METRO_MAP = {
